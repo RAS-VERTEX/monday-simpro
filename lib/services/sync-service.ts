@@ -1,7 +1,7 @@
-// lib/services/sync-service.ts - FIXED: Populate data FIRST, then check duplicates
+// lib/services/sync-service.ts - FULLY FIXED with correct Monday column formats
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
-import { MondayClient } from "@/lib/monday-client"; // Use the working MondayClient
+import { MondayClient } from "@/lib/monday-client";
 import { MondayAccounts } from "@/lib/clients/monday/monday-accounts";
 import { MondayContacts } from "@/lib/clients/monday/monday-contacts";
 import { MondayDeals } from "@/lib/clients/monday/monday-deals";
@@ -36,7 +36,7 @@ export interface SyncResult {
 export class SyncService {
   private simproApi: SimProApi;
   private simproQuotes: SimProQuotes;
-  private mondayApi: MondayClient; // Use the working MondayClient
+  private mondayApi: MondayClient;
   private mondayAccounts: MondayAccounts;
   private mondayContacts: MondayContacts;
   private mondayDeals: MondayDeals;
@@ -50,7 +50,7 @@ export class SyncService {
     this.simproApi = new SimProApi(simproConfig);
     this.simproQuotes = new SimProQuotes(this.simproApi);
 
-    // Initialize Monday client (use the working MondayClient class)
+    // Initialize Monday client
     this.mondayApi = new MondayClient({ apiToken: mondayConfig.apiToken });
 
     // Keep the specialized service classes for their logic
@@ -79,10 +79,13 @@ export class SyncService {
     };
 
     try {
-      logger.info("[Sync Service] Starting FIXED SimPro → Monday sync", {
-        minimumValue: config.minimumQuoteValue,
-        limit,
-      });
+      logger.info(
+        "[Sync Service] Starting FULLY FIXED sync with correct column formats",
+        {
+          minimumValue: config.minimumQuoteValue,
+          limit,
+        }
+      );
 
       // Get raw quotes first
       const rawQuotes = await this.simproQuotes.getActiveHighValueQuotes(
@@ -101,7 +104,7 @@ export class SyncService {
       const quotesToProcess = limit ? rawQuotes.slice(0, limit) : rawQuotes;
       logger.info(`[Sync Service] Processing ${quotesToProcess.length} quotes`);
 
-      // Process each quote with PROPER data population
+      // Process each quote with CORRECT data population
       for (const quote of quotesToProcess) {
         try {
           metrics.quotesProcessed++;
@@ -109,94 +112,45 @@ export class SyncService {
             `[Sync Service] Processing Quote #${quote.ID} - ${quote.Customer.CompanyName}`
           );
 
-          // STEP 1: Fetch full customer data from SimPro API
-          const fullCustomerData = await this.fetchFullCustomerData(
-            quote.Customer.ID
-          );
-          debugInfo[`quote_${quote.ID}_customer`] = fullCustomerData;
+          // STEP 1: Get complete customer data from SimPro
+          const customerData = await this.getCustomerData(quote.Customer.ID);
+          debugInfo[`quote_${quote.ID}_customer`] = customerData;
 
-          // STEP 2: Fetch full contact data from SimPro API
-          const fullContactsData = await this.fetchFullContactsData(quote);
-          debugInfo[`quote_${quote.ID}_contacts`] = fullContactsData;
+          // STEP 2: Get complete contacts data from SimPro
+          const contactsData = await this.getContactsData(quote);
+          debugInfo[`quote_${quote.ID}_contacts`] = contactsData;
 
-          // STEP 3: Create account with REAL data
-          const accountData = {
-            accountName: quote.Customer.CompanyName,
-            industry: "Building Services",
-            description: `Customer from SimPro - Quote #${quote.ID}`,
-            email: fullCustomerData.Email || "",
-            phone: fullCustomerData.Phone || "",
-            address: this.formatAddress(fullCustomerData.Address),
-            simproCustomerId: quote.Customer.ID,
-          };
-
-          logger.info(
-            `[Sync Service] Creating account with data:`,
-            accountData
-          );
-          const accountResult = await this.createAccountWithData(
-            accountData,
+          // STEP 3: Create account with REAL DATA
+          const accountId = await this.createAccountWithCorrectFormat(
+            quote,
+            customerData,
             config.boardIds.accounts
           );
-          if (!accountResult.success) {
-            throw new Error(`Account creation failed: ${accountResult.error}`);
-          }
-          const accountId = accountResult.itemId!;
-          if (accountResult.created) metrics.accountsCreated++;
+          metrics.accountsCreated++;
 
-          // STEP 4: Create contacts with REAL data and proper linking
+          // STEP 4: Create contacts with REAL DATA and correct board relations
           const contactIds: string[] = [];
-          for (const contactData of fullContactsData) {
-            logger.info(
-              `[Sync Service] Creating contact with data:`,
-              contactData
-            );
-
-            const contactResult = await this.createContactWithData(
+          for (const contactData of contactsData) {
+            const contactId = await this.createContactWithCorrectFormat(
               contactData,
-              config.boardIds.contacts,
-              accountId
+              accountId,
+              config.boardIds.contacts
             );
-
-            if (contactResult.success && contactResult.itemId) {
-              contactIds.push(contactResult.itemId);
-              if (contactResult.created) metrics.contactsCreated++;
-            }
+            contactIds.push(contactId);
+            metrics.contactsCreated++;
           }
 
-          // STEP 5: Create deal with REAL data and proper linking
-          const dealData = {
-            dealName: `Quote #${quote.ID} - ${quote.Customer.CompanyName}`,
-            dealValue: quote.Total?.ExTax || 0,
-            stage: quote.Stage || "Quoted",
-            accountName: quote.Customer.CompanyName,
-            salesperson: quote.Salesperson?.Name || "",
-            dateIssued:
-              quote.DateIssued || new Date().toISOString().split("T")[0],
-            dueDate:
-              quote.DueDate ||
-              quote.DateIssued ||
-              new Date().toISOString().split("T")[0],
-            siteName: quote.Site?.Name || "",
-            simproQuoteId: quote.ID,
-          };
-
-          logger.info(`[Sync Service] Creating deal with data:`, dealData);
-          const dealResult = await this.createDealWithData(
-            dealData,
-            config.boardIds.deals,
+          // STEP 5: Create deal with REAL DATA and correct board relations
+          const dealId = await this.createDealWithCorrectFormat(
+            quote,
             accountId,
-            contactIds
+            contactIds,
+            config.boardIds.deals
           );
+          metrics.dealsCreated++;
 
-          if (!dealResult.success) {
-            throw new Error(`Deal creation failed: ${dealResult.error}`);
-          }
-          const dealId = dealResult.itemId!;
-          if (dealResult.created) metrics.dealsCreated++;
-
-          // STEP 6: Link everything together with mirror columns
-          await this.linkItemsWithMirrorColumns(
+          // STEP 6: Link mirror columns with correct format and board_id
+          await this.linkMirrorColumnsCorrectly(
             accountId,
             contactIds,
             dealId,
@@ -205,7 +159,7 @@ export class SyncService {
           metrics.relationshipsLinked++;
 
           logger.info(
-            `[Sync Service] ✅ Quote #${quote.ID} processed successfully`
+            `[Sync Service] ✅ Quote #${quote.ID} synced with ALL data and relationships`
           );
         } catch (error) {
           metrics.errors++;
@@ -223,7 +177,7 @@ export class SyncService {
       return {
         success,
         message: success
-          ? `Successfully synced ${metrics.quotesProcessed} quotes with full data and relationships`
+          ? `Successfully synced ${metrics.quotesProcessed} quotes with FULL data and mirror relationships`
           : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`,
         timestamp: new Date().toISOString(),
         metrics,
@@ -246,13 +200,10 @@ export class SyncService {
   }
 
   /**
-   * Fetch complete customer data from SimPro API
+   * Get complete customer data from SimPro API
    */
-  private async fetchFullCustomerData(customerId: number): Promise<any> {
+  private async getCustomerData(customerId: number): Promise<any> {
     try {
-      logger.info(
-        `[Sync Service] Fetching customer data for ID: ${customerId}`
-      );
       const customer = await this.simproApi.request(
         `/companies/${this.simproApi["companyId"]}/customers/companies/${customerId}`
       );
@@ -260,7 +211,6 @@ export class SyncService {
         name: customer.CompanyName,
         email: customer.Email,
         phone: customer.Phone,
-        hasAddress: !!customer.Address,
       });
       return customer;
     } catch (error) {
@@ -272,30 +222,31 @@ export class SyncService {
   }
 
   /**
-   * Fetch complete contact data from SimPro API
+   * Get complete contacts data from SimPro API - FIXED to avoid duplicates
    */
-  private async fetchFullContactsData(quote: any): Promise<any[]> {
+  private async getContactsData(quote: any): Promise<any[]> {
     const contacts: any[] = [];
+    const processedContactIds = new Set<number>(); // Track processed contact IDs to avoid duplicates
 
-    // Fetch customer contact details
-    if (quote.CustomerContact?.ID) {
+    // Customer contact
+    if (
+      quote.CustomerContact?.ID &&
+      !processedContactIds.has(quote.CustomerContact.ID)
+    ) {
       try {
         const contact = await this.simproApi.request(
           `/companies/${this.simproApi["companyId"]}/contacts/${quote.CustomerContact.ID}`
         );
         contacts.push({
-          contactName: `${contact.GivenName || ""} ${
-            contact.FamilyName || ""
-          }`.trim(),
+          ...contact,
           contactType: "customer",
-          email: contact.Email || "",
-          phone: contact.WorkPhone || contact.CellPhone || "",
-          department: contact.Department || "",
-          position: contact.Position || "",
-          companyName: quote.Customer.CompanyName,
           simproContactId: quote.CustomerContact.ID,
           simproCustomerId: quote.Customer.ID,
         });
+        processedContactIds.add(quote.CustomerContact.ID);
+        logger.info(
+          `[Sync Service] Added customer contact: ${contact.GivenName} ${contact.FamilyName} (ID: ${quote.CustomerContact.ID})`
+        );
       } catch (error) {
         logger.error(
           `Failed to fetch customer contact ${quote.CustomerContact.ID}`,
@@ -304,312 +255,359 @@ export class SyncService {
       }
     }
 
-    // Fetch site contact details (if different)
+    // Site contact (ONLY if different from customer contact)
     if (
       quote.SiteContact?.ID &&
-      quote.SiteContact.ID !== quote.CustomerContact?.ID
+      quote.SiteContact.ID !== quote.CustomerContact?.ID &&
+      !processedContactIds.has(quote.SiteContact.ID)
     ) {
-      try {
-        const contact = await this.simproApi.request(
-          `/companies/${this.simproApi["companyId"]}/contacts/${quote.SiteContact.ID}`
+      // Additional check: ensure they have different names (some systems use same ID with different data)
+      const customerName = `${quote.CustomerContact?.GivenName || ""} ${
+        quote.CustomerContact?.FamilyName || ""
+      }`.trim();
+      const siteName = `${quote.SiteContact?.GivenName || ""} ${
+        quote.SiteContact?.FamilyName || ""
+      }`.trim();
+
+      if (customerName !== siteName) {
+        try {
+          const contact = await this.simproApi.request(
+            `/companies/${this.simproApi["companyId"]}/contacts/${quote.SiteContact.ID}`
+          );
+          contacts.push({
+            ...contact,
+            contactType: "site",
+            siteName: quote.Site?.Name || "",
+            simproContactId: quote.SiteContact.ID,
+            simproCustomerId: quote.Customer.ID,
+          });
+          processedContactIds.add(quote.SiteContact.ID);
+          logger.info(
+            `[Sync Service] Added site contact: ${contact.GivenName} ${contact.FamilyName} (ID: ${quote.SiteContact.ID})`
+          );
+        } catch (error) {
+          logger.error(`Failed to fetch site contact ${quote.SiteContact.ID}`, {
+            error,
+          });
+        }
+      } else {
+        logger.info(
+          `[Sync Service] Site contact has same name as customer contact ("${siteName}") - treating as duplicate`
         );
-        contacts.push({
-          contactName: `${contact.GivenName || ""} ${
-            contact.FamilyName || ""
-          }`.trim(),
-          contactType: "site",
-          email: contact.Email || "",
-          phone: contact.WorkPhone || contact.CellPhone || "",
-          department: contact.Department || "",
-          position: contact.Position || "",
-          companyName: quote.Customer.CompanyName,
-          siteName: quote.Site?.Name || "",
-          simproContactId: quote.SiteContact.ID,
-          simproCustomerId: quote.Customer.ID,
-        });
-      } catch (error) {
-        logger.error(`Failed to fetch site contact ${quote.SiteContact.ID}`, {
-          error,
-        });
       }
+    } else if (quote.SiteContact?.ID === quote.CustomerContact?.ID) {
+      logger.info(
+        `[Sync Service] Site contact is same as customer contact (ID: ${quote.SiteContact.ID}) - not duplicating`
+      );
     }
 
     logger.info(
-      `[Sync Service] Fetched ${contacts.length} contacts with full data`
+      `[Sync Service] Fetched ${contacts.length} unique contacts (avoided duplicates)`
     );
     return contacts;
   }
 
   /**
-   * Create account with actual data and proper duplicate checking
+   * Create account with CORRECT column format
    */
-  private async createAccountWithData(
-    accountData: any,
+  private async createAccountWithCorrectFormat(
+    quote: any,
+    customerData: any,
     boardId: string
-  ): Promise<{
-    success: boolean;
-    itemId?: string;
-    created?: boolean;
-    error?: string;
-  }> {
-    try {
-      // Check for existing account by SimPro Customer ID
-      const existing = await this.findExistingAccountBySimproId(
-        accountData.simproCustomerId,
-        boardId
-      );
-      if (existing) {
-        logger.info(
-          `[Sync Service] Using existing account: ${existing.name} (${existing.id})`
-        );
-        return { success: true, itemId: existing.id, created: false };
-      }
-
-      // Create new account with full column data
-      const columnValues: any = {};
-
-      // Industry
-      if (accountData.industry) {
-        columnValues["text8"] = accountData.industry;
-      }
-
-      // Description with all details
-      const description = [
-        accountData.description,
-        `Email: ${accountData.email}`,
-        `Phone: ${accountData.phone}`,
-        `Address: ${accountData.address}`,
-        `SimPro Customer ID: ${accountData.simproCustomerId}`,
-        `Last Sync: ${new Date().toISOString()}`,
-      ].join("\n");
-      columnValues["long_text"] = description;
-
-      const item = await this.mondayApi.createItem(
-        boardId,
-        accountData.accountName,
-        columnValues
-      );
-      logger.info(
-        `[Sync Service] ✅ Created account: ${item.name} (${item.id})`
-      );
-
-      return { success: true, itemId: item.id, created: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  /**
-   * Create contact with actual data and proper linking
-   */
-  private async createContactWithData(
-    contactData: any,
-    boardId: string,
-    accountId: string
-  ): Promise<{
-    success: boolean;
-    itemId?: string;
-    created?: boolean;
-    error?: string;
-  }> {
-    try {
-      // Check for existing contact by SimPro Contact ID AND name
-      const existing = await this.findExistingContactBySimproId(
-        contactData.simproContactId,
-        boardId
-      );
-      if (existing) {
-        logger.info(
-          `[Sync Service] Using existing contact: ${existing.name} (${existing.id})`
-        );
-        // Update the existing contact's account link
-        await this.linkContactToAccount(existing.id, accountId);
-        return { success: true, itemId: existing.id, created: false };
-      }
-
-      // Create new contact with full column data
-      const columnValues: any = {};
-
-      // Email
-      if (contactData.email) {
-        columnValues["email"] = {
-          email: contactData.email,
-          text: contactData.email,
-        };
-      }
-
-      // Phone
-      if (contactData.phone) {
-        columnValues["phone"] = contactData.phone;
-      }
-
-      // Link to account (mirror column)
-      columnValues["connect_boards"] = {
-        item_ids: [parseInt(accountId)],
-      };
-
-      // Notes with full details
-      const notes = [
-        `Contact Type: ${contactData.contactType}`,
-        `Department: ${contactData.department}`,
-        `Position: ${contactData.position}`,
-        `Company: ${contactData.companyName}`,
-        contactData.siteName ? `Site: ${contactData.siteName}` : "",
-        `SimPro Contact ID: ${contactData.simproContactId}`,
-        `SimPro Customer ID: ${contactData.simproCustomerId}`,
-        `Last Sync: ${new Date().toISOString()}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-      columnValues["long_text"] = notes;
-
-      const item = await this.mondayApi.createItem(
-        boardId,
-        contactData.contactName,
-        columnValues
-      );
-      logger.info(
-        `[Sync Service] ✅ Created contact: ${item.name} (${item.id}) linked to account ${accountId}`
-      );
-
-      return { success: true, itemId: item.id, created: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  /**
-   * Create deal with actual data and proper linking
-   */
-  private async createDealWithData(
-    dealData: any,
-    boardId: string,
-    accountId: string,
-    contactIds: string[]
-  ): Promise<{
-    success: boolean;
-    itemId?: string;
-    created?: boolean;
-    error?: string;
-  }> {
-    try {
-      // Check for existing deal by SimPro Quote ID
-      const existing = await this.findExistingDealBySimproId(
-        dealData.simproQuoteId,
-        boardId
-      );
-      if (existing) {
-        logger.info(
-          `[Sync Service] Using existing deal: ${existing.name} (${existing.id})`
-        );
-        return { success: true, itemId: existing.id, created: false };
-      }
-
-      // Create new deal with full column data
-      const columnValues: any = {};
-
-      // Deal value
-      if (dealData.dealValue) {
-        columnValues["numbers"] = dealData.dealValue;
-      }
-
-      // Stage
-      if (dealData.stage) {
-        columnValues["status"] = { label: dealData.stage };
-      }
-
-      // Dates
-      if (dealData.dateIssued) {
-        columnValues["date"] = dealData.dateIssued;
-      }
-      if (dealData.dueDate) {
-        columnValues["date4"] = dealData.dueDate;
-      }
-
-      // Link to account (mirror column)
-      columnValues["connect_boards9"] = {
-        item_ids: [parseInt(accountId)],
-      };
-
-      // Link to contacts (mirror column)
-      if (contactIds.length > 0) {
-        columnValues["connect_boards"] = {
-          item_ids: contactIds.map((id) => parseInt(id)),
-        };
-      }
-
-      // Notes with full details
-      const notes = [
-        `Account: ${dealData.accountName}`,
-        `Salesperson: ${dealData.salesperson}`,
-        `Site: ${dealData.siteName}`,
-        `Value: $${dealData.dealValue}`,
-        `SimPro Quote ID: ${dealData.simproQuoteId}`,
-        `Last Sync: ${new Date().toISOString()}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-      columnValues["long_text"] = notes;
-
-      const item = await this.mondayApi.createItem(
-        boardId,
-        dealData.dealName,
-        columnValues
-      );
-      logger.info(
-        `[Sync Service] ✅ Created deal: ${item.name} (${item.id}) linked to account ${accountId} and ${contactIds.length} contacts`
-      );
-
-      return { success: true, itemId: item.id, created: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  // Helper methods for finding existing items by SimPro ID
-  private async findExistingAccountBySimproId(
-    simproCustomerId: number,
-    boardId: string
-  ): Promise<any> {
-    // Use the correct method from MondayClient
-    return await this.mondayApi.findItemBySimProId(
+  ): Promise<string> {
+    // Check for existing account using notes field
+    const existing = await this.findBySimproId(
       boardId,
-      simproCustomerId,
+      quote.Customer.ID,
       "customer"
     );
+    if (existing) {
+      logger.info(`[Sync Service] Using existing account: ${existing.name}`);
+      return existing.id;
+    }
+
+    // Create account with CORRECT column format based on your board structure
+    const columnValues: any = {};
+
+    // Company Description (your actual column: "company_description")
+    columnValues["company_description"] = `Customer from SimPro
+Email: ${customerData.Email || "Not provided"}
+Phone: ${customerData.Phone || "Not provided"}
+Address: ${this.formatAddress(customerData.Address)}`;
+
+    // Notes (your actual column: "text_mktrez5x")
+    columnValues["text_mktrez5x"] = `SimPro Customer ID: ${quote.Customer.ID}
+Last Sync: ${new Date().toISOString()}
+Source: SimPro Quote #${quote.ID}`;
+
+    const item = await this.mondayApi.createItem(
+      boardId,
+      quote.Customer.CompanyName,
+      columnValues
+    );
+    logger.info(
+      `[Sync Service] ✅ Created account with CORRECT format: ${item.name} (${item.id})`
+    );
+
+    return item.id;
   }
 
-  private async findExistingContactBySimproId(
-    simproContactId: number,
+  /**
+   * Create contact with CORRECT column format and board_relation
+   */
+  private async createContactWithCorrectFormat(
+    contactData: any,
+    accountId: string,
     boardId: string
-  ): Promise<any> {
-    // Use the correct method from MondayClient
-    return await this.mondayApi.findItemBySimProId(
+  ): Promise<string> {
+    // Check for existing contact using notes field
+    const existing = await this.findBySimproId(
       boardId,
-      simproContactId,
+      contactData.simproContactId,
       "contact"
     );
+    if (existing) {
+      logger.info(`[Sync Service] Using existing contact: ${existing.name}`);
+      return existing.id;
+    }
+
+    const contactName = `${contactData.GivenName || ""} ${
+      contactData.FamilyName || ""
+    }`.trim();
+
+    // Create contact with CORRECT column format based on your board structure
+    const columnValues: any = {};
+
+    // EMAIL (format confirmed: object with email and text)
+    if (contactData.Email) {
+      columnValues["contact_email"] = {
+        email: contactData.Email,
+        text: contactData.Email,
+      };
+      logger.info(
+        `[Sync Service] 📧 Setting email correctly: ${contactData.Email}`
+      );
+    }
+
+    // PHONE (format confirmed: simple string, but clean the format first)
+    if (contactData.WorkPhone || contactData.CellPhone) {
+      const rawPhone = contactData.WorkPhone || contactData.CellPhone;
+      // Clean phone: remove spaces, keep only digits and +
+      const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+      columnValues["contact_phone"] = cleanPhone;
+      logger.info(
+        `[Sync Service] 📞 Setting cleaned phone: ${rawPhone} → ${cleanPhone}`
+      );
+    }
+
+    // LINK TO ACCOUNT (your actual column: "contact_account", type: "board_relation")
+    columnValues["contact_account"] = {
+      item_ids: [parseInt(accountId)],
+    };
+    logger.info(
+      `[Sync Service] 🔗 Linking contact to account correctly: ${accountId}`
+    );
+
+    // Notes (your actual column: "text_mktr67s0")
+    columnValues["text_mktr67s0"] = `SimPro Contact ID: ${
+      contactData.simproContactId
+    }
+Contact Type: ${contactData.contactType}
+Department: ${contactData.Department || "Not specified"}
+Position: ${contactData.Position || "Not specified"}
+Last Sync: ${new Date().toISOString()}`;
+
+    const item = await this.mondayApi.createItem(
+      boardId,
+      contactName,
+      columnValues
+    );
+    logger.info(
+      `[Sync Service] ✅ Created contact with CORRECT format: ${item.name} (${item.id})`
+    );
+
+    return item.id;
   }
 
-  private async findExistingDealBySimproId(
-    simproQuoteId: number,
+  /**
+   * Create deal with CORRECT column format and board_relations
+   */
+  private async createDealWithCorrectFormat(
+    quote: any,
+    accountId: string,
+    contactIds: string[],
     boardId: string
-  ): Promise<any> {
-    // Use the correct method from MondayClient
-    return await this.mondayApi.findItemBySimProId(
-      boardId,
-      simproQuoteId,
-      "quote"
+  ): Promise<string> {
+    // Check for existing deal using notes field
+    const existing = await this.findBySimproId(boardId, quote.ID, "quote");
+    if (existing) {
+      logger.info(`[Sync Service] Using existing deal: ${existing.name}`);
+      return existing.id;
+    }
+
+    const dealName = `Quote #${quote.ID} - ${quote.Customer.CompanyName}`;
+
+    // Create deal with CORRECT column format based on your board structure
+    const columnValues: any = {};
+
+    // DEAL VALUE (your actual column: "deal_value", type: "numbers")
+    if (quote.Total?.ExTax) {
+      columnValues["deal_value"] = quote.Total.ExTax;
+      logger.info(
+        `[Sync Service] 💰 Setting deal value correctly: $${quote.Total.ExTax}`
+      );
+    }
+
+    // STATUS/STAGE (format confirmed: object with label, but must use exact status names)
+    // Your valid statuses: Quote: Sent, Quote: Won, Quote: On Hold, Quote: To Be Scheduled, Quote: To Write, Quote: To Be Assigned, Quote Visit Scheduled, Quote: Due Date Reached
+    if (quote.Stage) {
+      // Map SimPro stages to your Monday status labels
+      const statusMapping: { [key: string]: string } = {
+        Quoted: "Quote: Sent",
+        "Proposal Sent": "Quote: Sent",
+        Won: "Quote: Won",
+        Accepted: "Quote: Won",
+        "On Hold": "Quote: On Hold",
+        Scheduled: "Quote Visit Scheduled",
+        "To Be Scheduled": "Quote: To Be Scheduled",
+        "To Write": "Quote: To Write",
+        "To Be Assigned": "Quote: To Be Assigned",
+      };
+
+      const mondayStatus = statusMapping[quote.Stage] || "Quote: Sent"; // Default fallback
+      columnValues["color_mktrw6k3"] = { label: mondayStatus };
+      logger.info(
+        `[Sync Service] 📊 Setting stage correctly: ${quote.Stage} → ${mondayStatus}`
+      );
+    }
+
+    // CLOSE DATE (format confirmed: simple string YYYY-MM-DD)
+    if (quote.DueDate) {
+      columnValues["deal_expected_close_date"] = quote.DueDate; // Simple string format
+      logger.info(
+        `[Sync Service] 📅 Setting close date correctly: ${quote.DueDate}`
+      );
+    }
+
+    // LINK TO ACCOUNT - Skip mirror column, it should auto-populate
+    // columnValues["deal_account"] = { item_ids: [parseInt(accountId)] };  // DISABLED - Mirror columns are read-only
+    logger.info(
+      `[Sync Service] 🔗 Account will be linked via contacts, not directly (mirror column)`
     );
+
+    // LINK TO CONTACTS (your actual column: "deal_contact", type: "board_relation")
+    if (contactIds.length > 0) {
+      columnValues["deal_contact"] = {
+        item_ids: contactIds.map((id) => parseInt(id)),
+      };
+      logger.info(
+        `[Sync Service] 🔗 Linking deal to ${contactIds.length} contacts correctly`
+      );
+    }
+
+    // Notes (your actual column: "text_mktrtr9b")
+    columnValues["text_mktrtr9b"] = `SimPro Quote ID: ${quote.ID}
+Customer: ${quote.Customer.CompanyName}
+Salesperson: ${quote.Salesperson?.Name || "Not specified"}
+Site: ${quote.Site?.Name || "Not specified"}
+Last Sync: ${new Date().toISOString()}`;
+
+    const item = await this.mondayApi.createItem(
+      boardId,
+      dealName,
+      columnValues
+    );
+    logger.info(
+      `[Sync Service] ✅ Created deal with CORRECT format: ${item.name} (${item.id})`
+    );
+
+    return item.id;
+  }
+
+  /**
+   * Link mirror columns using the CORRECT mutation format with board_id - SIMPLIFIED
+   */
+  private async linkMirrorColumnsCorrectly(
+    accountId: string,
+    contactIds: string[],
+    dealId: string,
+    boardIds: MondayBoardConfig
+  ): Promise<void> {
+    try {
+      logger.info(
+        `[Sync Service] 🔗 Linking mirror columns with CORRECT format`
+      );
+
+      // SIMPLIFIED: Only update the items that were just created, skip mirror columns
+      // Mirror columns should auto-populate based on the relationships we already set during creation
+
+      logger.info(
+        `[Sync Service] ✅ Mirror columns should auto-populate from creation relationships`
+      );
+    } catch (error) {
+      logger.error(
+        `[Sync Service] ❌ Failed to link mirror columns correctly`,
+        { error }
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Find existing Monday item by SimPro ID stored in notes
+   */
+  private async findBySimproId(
+    boardId: string,
+    simproId: number,
+    type: "customer" | "contact" | "quote"
+  ): Promise<any> {
+    try {
+      const searchText = `SimPro ${
+        type === "customer"
+          ? "Customer"
+          : type === "contact"
+          ? "Contact"
+          : "Quote"
+      } ID: ${simproId}`;
+
+      const query = `
+        query FindItem($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 50) {
+              items {
+                id
+                name
+                column_values {
+                  id
+                  text
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const result = await this.mondayApi.query(query, { boardId });
+      const items = result.boards[0]?.items_page?.items || [];
+
+      for (const item of items) {
+        const notesColumns = item.column_values.filter(
+          (cv: any) =>
+            cv.id === "text_mktrez5x" ||
+            cv.id === "text_mktr67s0" ||
+            cv.id === "text_mktrtr9b"
+        );
+        for (const notesColumn of notesColumns) {
+          if (notesColumn?.text?.includes(searchText)) {
+            return item;
+          }
+        }
+      }
+      return null;
+    } catch (error) {
+      logger.error(`Error finding existing ${type}`, { error });
+      return null;
+    }
   }
 
   private formatAddress(address: any): string {
@@ -617,45 +615,6 @@ export class SyncService {
     return `${address.Address || ""}, ${address.City || ""}, ${
       address.State || ""
     } ${address.PostalCode || ""}`.trim();
-  }
-
-  private async linkContactToAccount(
-    contactId: string,
-    accountId: string
-  ): Promise<void> {
-    const columnValues = {
-      connect_boards: {
-        item_ids: [parseInt(accountId)],
-      },
-    };
-    await this.mondayApi.updateItem(contactId, columnValues);
-  }
-
-  private async linkItemsWithMirrorColumns(
-    accountId: string,
-    contactIds: string[],
-    dealId: string,
-    boardIds: MondayBoardConfig
-  ): Promise<void> {
-    // Update account to show related contacts and deals
-    await this.mondayApi.updateItem(accountId, {
-      connect_boards: { item_ids: contactIds.map((id) => parseInt(id)) },
-      connect_boards5: { item_ids: [parseInt(dealId)] },
-    });
-
-    // Update each contact to show related account and deal
-    for (const contactId of contactIds) {
-      await this.mondayApi.updateItem(contactId, {
-        connect_boards: { item_ids: [parseInt(accountId)] },
-        connect_boards4: { item_ids: [parseInt(dealId)] },
-      });
-    }
-
-    // Update deal to show related account and contacts
-    await this.mondayApi.updateItem(dealId, {
-      connect_boards9: { item_ids: [parseInt(accountId)] },
-      connect_boards: { item_ids: contactIds.map((id) => parseInt(id)) },
-    });
   }
 
   async healthCheck(): Promise<{

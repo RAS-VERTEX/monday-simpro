@@ -1,4 +1,4 @@
-// lib/clients/monday/monday-config.ts - Column IDs and configuration
+// lib/clients/monday/monday-config.ts - FIXED with your actual column IDs
 export interface MondayBoardConfig {
   accounts: string;
   contacts: string;
@@ -29,28 +29,28 @@ export interface MondayColumnIds {
   };
 }
 
-// These will be discovered from your actual Monday setup
+// CORRECTED: Using your actual column IDs from the Monday boards
 export const MONDAY_COLUMN_IDS: MondayColumnIds = {
   accounts: {
-    description: "long_text",
-    notes: "long_text__1",
-    contacts_relation: "connect_boards",
-    deals_relation: "connect_boards5",
+    description: "company_description", // ✅ Correct: company description
+    notes: "text_mktrez5x", // ✅ Correct: Notes field
+    contacts_relation: "account_contact", // ✅ Correct: Contacts relation
+    deals_relation: "account_deal", // ✅ Correct: Deals relation (mirror)
   },
   contacts: {
-    email: "email",
-    phone: "phone",
-    notes: "long_text",
-    accounts_relation: "connect_boards",
-    deals_relation: "connect_boards4",
+    email: "contact_email", // ✅ Correct: Email field
+    phone: "contact_phone", // ✅ Correct: Phone field
+    notes: "text_mktr67s0", // ✅ Correct: Notes field
+    accounts_relation: "contact_account", // ✅ Correct: Accounts relation
+    deals_relation: "contact_deal", // ✅ Correct: Deals relation
   },
   deals: {
-    value: "numbers",
-    stage: "status",
-    close_date: "date4",
-    notes: "long_text",
-    contacts_relation: "connect_boards",
-    accounts_relation: "connect_boards9",
+    value: "deal_value", // ✅ Correct: Deal Value field
+    stage: "color_mktrw6k3", // ✅ Correct: Status field
+    close_date: "deal_expected_close_date", // ✅ Correct: Expected Close Date
+    notes: "text_mktrtr9b", // ✅ Correct: Notes field
+    contacts_relation: "deal_contact", // ✅ Correct: Contacts relation
+    accounts_relation: "deal_account", // ✅ Correct: Accounts relation (mirror)
   },
 };
 
