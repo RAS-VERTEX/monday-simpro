@@ -62,6 +62,8 @@ export class SyncService {
     this.mappingService = new MappingService();
   }
 
+  // In lib/services/sync-service.ts - replace the existing syncSimProToMonday method with this:
+
   async syncSimProToMonday(
     config: SyncConfig,
     limit?: number
@@ -87,11 +89,12 @@ export class SyncService {
         }
       );
 
-      // Get raw quotes first
-      const rawQuotes = await this.simproQuotes.getActiveHighValueQuotes(
+      // Get ALL valid quotes first
+      const allValidQuotes = await this.simproQuotes.getActiveHighValueQuotes(
         config.minimumQuoteValue
       );
-      if (rawQuotes.length === 0) {
+
+      if (allValidQuotes.length === 0) {
         return {
           success: true,
           message: "No high-value quotes found to sync",
@@ -100,9 +103,20 @@ export class SyncService {
         };
       }
 
-      // Apply limit for testing
-      const quotesToProcess = limit ? rawQuotes.slice(0, limit) : rawQuotes;
-      logger.info(`[Sync Service] Processing ${quotesToProcess.length} quotes`);
+      logger.info(
+        `[Sync Service] Found ${allValidQuotes.length} valid quotes to process`
+      );
+
+      // Apply limit AFTER getting valid quotes
+      const quotesToProcess = limit
+        ? allValidQuotes.slice(0, limit)
+        : allValidQuotes;
+
+      logger.info(
+        `[Sync Service] Processing ${quotesToProcess.length} quotes${
+          limit ? ` (limited from ${allValidQuotes.length})` : ""
+        }`
+      );
 
       // Process each quote with CORRECT data population
       for (const quote of quotesToProcess) {
@@ -177,28 +191,28 @@ export class SyncService {
       return {
         success,
         message: success
-          ? `Successfully synced ${metrics.quotesProcessed} quotes with FULL data and mirror relationships`
+          ? `Successfully synced ${
+              metrics.quotesProcessed
+            } quotes with FULL data and mirror relationships${
+              limit ? ` (limited from ${allValidQuotes.length} available)` : ""
+            }`
           : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`,
         timestamp: new Date().toISOString(),
         metrics,
         errors: errors.length > 0 ? errors : undefined,
-        debugInfo,
+        debugInfo: Object.keys(debugInfo).length > 0 ? debugInfo : undefined,
       };
     } catch (error) {
-      logger.error("[Sync Service] Critical error", { error });
+      logger.error("[Sync Service] Critical sync error", { error });
       return {
         success: false,
-        message:
-          error instanceof Error ? error.message : "Critical sync failure",
+        message: error instanceof Error ? error.message : "Unknown sync error",
         timestamp: new Date().toISOString(),
         metrics,
-        errors: [
-          error instanceof Error ? error.message : "Critical sync failure",
-        ],
+        errors: [error instanceof Error ? error.message : "Critical failure"],
       };
     }
   }
-
   /**
    * Get complete customer data from SimPro API
    */

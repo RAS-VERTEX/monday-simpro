@@ -1,4 +1,4 @@
-// lib/clients/simpro/simpro-quotes.ts - Quote operations only
+// lib/clients/simpro/simpro-quotes.ts - FIXED to apply limit before enhancement
 import { SimProApi } from "./simpro-api";
 import { SimProQuote } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -55,22 +55,49 @@ export class SimProQuotes {
         return [];
       }
 
-      // Step 2: Enhance quotes with full details
-      const enhancedQuotes = await this.batchEnhanceQuotes(quotes, companyId);
-
-      // Step 3: Final filtering for valid quotes
-      const activeQuotes = enhancedQuotes.filter((quote) => {
+      // APPLY FINAL FILTER FIRST to avoid enhancing quotes we'll discard
+      const validQuotes = quotes.filter((quote) => {
         const hasMinimumValue =
           quote.Total?.ExTax && quote.Total.ExTax >= minimumValue;
         const isNotClosed = !quote.IsClosed;
+
+        // Debug why quotes are being filtered out
+        if (!hasMinimumValue) {
+          logger.debug(
+            `[SimPro Quotes] Quote ${quote.ID} filtered - value: ${quote.Total?.ExTax}, minimum: ${minimumValue}`
+          );
+        }
+        if (!isNotClosed) {
+          logger.debug(
+            `[SimPro Quotes] Quote ${quote.ID} filtered - is closed: ${quote.IsClosed}`
+          );
+        }
 
         return hasMinimumValue && isNotClosed;
       });
 
       logger.info(
-        `[SimPro Quotes] Returning ${activeQuotes.length} enhanced high-value quotes`
+        `[SimPro Quotes] ${
+          validQuotes.length
+        } quotes passed final validation (${
+          quotes.length - validQuotes.length
+        } filtered out)`
       );
-      return activeQuotes;
+
+      if (validQuotes.length === 0) {
+        return [];
+      }
+
+      // Step 2: Enhance quotes with full details (now only the valid ones)
+      const enhancedQuotes = await this.batchEnhanceQuotes(
+        validQuotes,
+        companyId
+      );
+
+      logger.info(
+        `[SimPro Quotes] Returning ${enhancedQuotes.length} enhanced high-value quotes`
+      );
+      return enhancedQuotes;
     } catch (error) {
       logger.error("[SimPro Quotes] Failed to get high-value quotes", {
         error,
