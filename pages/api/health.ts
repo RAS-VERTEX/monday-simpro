@@ -1,140 +1,152 @@
-// pages/api/health.ts - Public Health Check Endpoint
+// pages/api/health.ts - Public health check endpoint using new structure
+import { NextApiRequest, NextApiResponse } from "next";
+import { SyncService } from "@/lib/services/sync-service";
+import { createSimProConfig } from "@/lib/clients/simpro/simpro-config";
+import { createMondayConfig } from "@/lib/clients/monday/monday-config";
+import { logger } from "@/lib/utils/logger";
 
-import { NextApiRequest, NextApiResponse } from 'next';
-import { SimProClient } from '@/lib/simpro-client';
-import { MondayClient } from '@/lib/monday-client';
-import { HealthStatus } from '@/types/sync';
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   const startTime = Date.now();
-  
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const healthStatus: HealthStatus = {
-      status: 'healthy',
+    logger.info("[Health] Public health check requested");
+
+    const healthStatus = {
+      status: "healthy" as "healthy" | "degraded" | "unhealthy",
       timestamp: new Date().toISOString(),
-      version: '1.0.0',
+      version: "2.0.0",
+      architecture: "simplified-one-way-sync",
       services: {
         simpro: {
-          status: 'down',
+          status: "down" as "up" | "down",
           lastCheck: new Date().toISOString(),
-          responseTime: undefined
+          responseTime: undefined as number | undefined,
         },
         monday: {
-          status: 'down',
+          status: "down" as "up" | "down",
           lastCheck: new Date().toISOString(),
-          responseTime: undefined
-        }
+          responseTime: undefined as number | undefined,
+        },
       },
       lastSync: {
-        timestamp: 'Not available via this endpoint',
-        status: 'failed',
-        quotesProcessed: 0
-      }
+        timestamp: "Not available via public endpoint",
+        status: "unknown" as "success" | "failed" | "unknown",
+        quotesProcessed: 0,
+      },
     };
 
+    // Check environment configuration
     const envCheck = {
-      hasSimproConfig: !!(process.env.SIMPRO_BASE_URL && process.env.SIMPRO_ACCESS_TOKEN),
+      hasSimproConfig: !!(
+        process.env.SIMPRO_BASE_URL && process.env.SIMPRO_ACCESS_TOKEN
+      ),
       hasMondayConfig: !!process.env.MONDAY_API_TOKEN,
-      hasBoardIds: !!(process.env.MONDAY_ACCOUNTS_BOARD_ID && 
-                     process.env.MONDAY_CONTACTS_BOARD_ID && 
-                     process.env.MONDAY_DEALS_BOARD_ID),
-      hasWebhookSecrets: !!(process.env.SIMPRO_WEBHOOK_SECRET)
+      hasBoardIds: !!(
+        process.env.MONDAY_ACCOUNTS_BOARD_ID &&
+        process.env.MONDAY_CONTACTS_BOARD_ID &&
+        process.env.MONDAY_DEALS_BOARD_ID
+      ),
+      hasWebhookSecrets: !!process.env.SIMPRO_WEBHOOK_SECRET,
     };
 
-    if (envCheck.hasSimproConfig) {
+    // Only test connections if we have proper configuration
+    if (
+      envCheck.hasSimproConfig &&
+      envCheck.hasMondayConfig &&
+      envCheck.hasBoardIds
+    ) {
       try {
-        const simproClient = new SimProClient({
-          baseUrl: process.env.SIMPRO_BASE_URL!,
-          accessToken: process.env.SIMPRO_ACCESS_TOKEN!,
-          companyId: parseInt(process.env.SIMPRO_COMPANY_ID || '0')
+        const simproConfig = createSimProConfig();
+        const mondayConfig = createMondayConfig(process.env.MONDAY_API_TOKEN!, {
+          accounts: process.env.MONDAY_ACCOUNTS_BOARD_ID!,
+          contacts: process.env.MONDAY_CONTACTS_BOARD_ID!,
+          deals: process.env.MONDAY_DEALS_BOARD_ID!,
         });
 
-        const simproStartTime = Date.now();
-        const simproTest = await simproClient.testConnection();
-        const simproResponseTime = Date.now() - simproStartTime;
+        const syncService = new SyncService(simproConfig, mondayConfig);
+        const serviceHealthCheck = await syncService.healthCheck();
 
-        healthStatus.services.simpro = {
-          status: simproTest.success ? 'up' : 'down',
-          lastCheck: new Date().toISOString(),
-          responseTime: simproResponseTime
-        };
-      } catch (error) {
-        console.error('[Health] SimPro test failed:', error);
-        healthStatus.services.simpro.status = 'down';
-      }
-    }
+        healthStatus.services.simpro = serviceHealthCheck.simpro;
+        healthStatus.services.monday = serviceHealthCheck.monday;
 
-    if (envCheck.hasMondayConfig) {
-      try {
-        const mondayClient = new MondayClient({
-          apiToken: process.env.MONDAY_API_TOKEN!
+        // Determine overall health
+        if (
+          serviceHealthCheck.simpro.status === "up" &&
+          serviceHealthCheck.monday.status === "up"
+        ) {
+          healthStatus.status = "healthy";
+        } else if (
+          serviceHealthCheck.simpro.status === "up" ||
+          serviceHealthCheck.monday.status === "up"
+        ) {
+          healthStatus.status = "degraded";
+        } else {
+          healthStatus.status = "unhealthy";
+        }
+      } catch (connectionError) {
+        logger.error("[Health] Connection test failed", {
+          error: connectionError,
         });
-
-        const mondayStartTime = Date.now();
-        const mondayTest = await mondayClient.testConnection();
-        const mondayResponseTime = Date.now() - mondayStartTime;
-
-        healthStatus.services.monday = {
-          status: mondayTest.success ? 'up' : 'down',
-          lastCheck: new Date().toISOString(),
-          responseTime: mondayResponseTime
-        };
-      } catch (error) {
-        console.error('[Health] Monday test failed:', error);
-        healthStatus.services.monday.status = 'down';
+        healthStatus.status = "unhealthy";
+        healthStatus.services.simpro.status = "down";
+        healthStatus.services.monday.status = "down";
       }
-    }
-
-    if (!envCheck.hasSimproConfig || !envCheck.hasMondayConfig || !envCheck.hasBoardIds) {
-      healthStatus.status = 'unhealthy';
-    } else if (healthStatus.services.simpro.status === 'down' || healthStatus.services.monday.status === 'down') {
-      healthStatus.status = 'degraded';
+    } else {
+      logger.warn("[Health] Missing environment configuration");
+      healthStatus.status = "unhealthy";
     }
 
     const executionTime = Date.now() - startTime;
 
-    const httpStatus = healthStatus.status === 'healthy' ? 200 : 
-                      healthStatus.status === 'degraded' ? 207 : 503;
+    logger.info(
+      `[Health] Public health check completed in ${executionTime}ms - Status: ${healthStatus.status}`
+    );
 
-    res.status(httpStatus).json({
-      success: healthStatus.status !== 'unhealthy',
+    res.status(healthStatus.status === "unhealthy" ? 503 : 200).json({
+      ...healthStatus,
       executionTime: `${executionTime}ms`,
-      health: healthStatus,
-      configuration: {
-        environment: envCheck,
-        endpoints: {
-          simproWebhook: '/api/webhooks/simpro',
-          mondayWebhook: '/api/webhooks/monday',
-          cronSync: '/api/cron/sync-quotes',
-          cronHealth: '/api/cron/health-check'
-        },
-        sync: {
-          minimumQuoteValue: 15000,
-          cronSchedule: 'Every 10 minutes',
-          healthCheckSchedule: 'Every 6 hours'
-        }
+      configurationStatus: {
+        simproConfigured: envCheck.hasSimproConfig,
+        mondayConfigured: envCheck.hasMondayConfig,
+        boardsConfigured: envCheck.hasBoardIds,
+        webhooksConfigured: envCheck.hasWebhookSecrets,
       },
-      buildInfo: {
-        nodeVersion: process.version,
-        platform: process.platform,
-        timestamp: new Date().toISOString()
-      }
+      features: {
+        syncDirection: "one-way (SimPro → Monday)",
+        stageMapping: "simplified (Sent → Proposal Sent, others → Discovery)",
+        architecture: "clean modular components",
+        logging: "structured with context",
+      },
+      endpoints: {
+        testSync: "/api/test-new-sync",
+        cronSync: "/api/cron/sync-quotes",
+        simproWebhook: "/api/webhooks/simpro",
+        mondayWebhook: "/api/webhooks/monday (simplified)",
+      },
     });
-
   } catch (error) {
     const executionTime = Date.now() - startTime;
-    
-    console.error(`[Health] Error after ${executionTime}ms:`, error);
-    
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+
+    logger.error(
+      `[Health] Public health check failed after ${executionTime}ms`,
+      { error }
+    );
+
+    res.status(503).json({
+      status: "unhealthy",
+      timestamp: new Date().toISOString(),
+      version: "2.0.0",
+      architecture: "simplified-one-way-sync",
+      error: error instanceof Error ? error.message : "Unknown error",
       executionTime: `${executionTime}ms`,
-      timestamp: new Date().toISOString()
+      message: "Health check failed - see server logs for details",
     });
   }
 }
