@@ -1,4 +1,4 @@
-// lib/clients/simpro/simpro-quotes.ts - INITIAL SYNC: GET EVERYTHING
+// lib/clients/simpro/simpro-quotes.ts - EFFICIENT: Filter first, then get details
 import { SimProApi } from "./simpro-api";
 import { SimProQuote } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -31,7 +31,7 @@ export class SimProQuotes {
   constructor(private api: SimProApi) {}
 
   /**
-   * INITIAL SYNC: Get ALL high-value quotes - be comprehensive, not clever
+   * EFFICIENT: Get high-value quotes by filtering basic data first
    */
   async getActiveHighValueQuotes(
     minimumValue: number = 15000
@@ -39,76 +39,109 @@ export class SimProQuotes {
     const companyId = this.api.getCompanyId();
 
     logger.info(
-      `[SimPro Quotes] INITIAL SYNC: Getting ALL active quotes over $${minimumValue} (comprehensive approach)`
+      `[SimPro Quotes] EFFICIENT: Getting quotes over $${minimumValue} with stage Complete/Approved`
     );
 
     try {
-      // Step 1: Get ALL active quotes - no shortcuts, no optimizations
-      const allActiveQuotes = await this.getAllActiveQuotes(companyId);
+      // Step 1: Get ALL basic quotes (just ID, Description, Total)
+      const basicQuotes = await this.getAllBasicQuotes(companyId);
 
-      if (allActiveQuotes.length === 0) {
+      if (basicQuotes.length === 0) {
         logger.info(`[SimPro Quotes] No active quotes found in SimPro`);
         return [];
       }
 
-      // Step 2: Filter for high-value quotes that meet ALL criteria
-      const validQuotes = this.filterForValidHighValueQuotes(
-        allActiveQuotes,
-        minimumValue
+      logger.info(
+        `[SimPro Quotes] Retrieved ${basicQuotes.length} basic active quotes`
       );
 
-      if (validQuotes.length === 0) {
-        logger.info(
-          `[SimPro Quotes] No quotes meet all criteria (stage, status, value)`
+      // Step 2: Filter basic quotes by value (we can do this without full details)
+      const highValueBasicQuotes = basicQuotes.filter((quote) => {
+        const hasHighValue =
+          quote.Total?.ExTax && quote.Total.ExTax >= minimumValue;
+        if (hasHighValue) {
+          logger.debug(
+            `[SimPro Quotes] Basic quote ${quote.ID}: $${quote.Total.ExTax} - qualifies for detailed check`
+          );
+        }
+        return hasHighValue;
+      });
+
+      logger.info(
+        `[SimPro Quotes] Found ${highValueBasicQuotes.length} high-value quotes (>= $${minimumValue}) out of ${basicQuotes.length} total`
+      );
+
+      if (highValueBasicQuotes.length === 0) {
+        logger.warn(
+          `[SimPro Quotes] No quotes found over $${minimumValue} - check if minimumValue is correct`
         );
         return [];
       }
 
-      // Step 3: Enhance the valid quotes
+      // Step 3: Get full details ONLY for high-value quotes
+      const detailedQuotes = await this.getDetailedQuotes(
+        highValueBasicQuotes,
+        companyId
+      );
+
+      // Step 4: Apply stage and status filters to detailed quotes
+      const validQuotes = this.filterByStageAndStatus(
+        detailedQuotes,
+        minimumValue
+      );
+
+      if (validQuotes.length === 0) {
+        logger.warn(
+          `[SimPro Quotes] No quotes passed stage/status filtering - found ${detailedQuotes.length} high-value but none with Complete/Approved stage`
+        );
+        return [];
+      }
+
+      // Step 5: Enhance the final valid quotes
       const enhancedQuotes = await this.batchEnhanceQuotes(
         validQuotes,
         companyId
       );
 
       logger.info(
-        `[SimPro Quotes] INITIAL SYNC COMPLETE: Found ${enhancedQuotes.length} qualifying quotes out of ${allActiveQuotes.length} total active quotes`
+        `[SimPro Quotes] SUCCESS: Found ${enhancedQuotes.length} final qualifying quotes (Complete/Approved stage, valid status, $${minimumValue}+)`
       );
       return enhancedQuotes;
     } catch (error) {
-      logger.error("[SimPro Quotes] Initial sync failed", { error });
+      logger.error("[SimPro Quotes] Failed to get high-value quotes", {
+        error,
+      });
       throw error;
     }
   }
 
   /**
-   * Get ALL active quotes from SimPro - comprehensive pagination
+   * Get ALL basic quotes (just ID, Description, Total) efficiently
    */
-  private async getAllActiveQuotes(companyId: number): Promise<SimProQuote[]> {
+  private async getAllBasicQuotes(companyId: number): Promise<SimProQuote[]> {
     const allQuotes: SimProQuote[] = [];
     let page = 1;
-    const pageSize = 250; // Max allowed by SimPro
+    const pageSize = 250;
     let hasMorePages = true;
 
-    logger.info(
-      `[SimPro Quotes] Starting comprehensive pagination to get ALL active quotes`
-    );
+    logger.info(`[SimPro Quotes] Getting ALL basic quotes with pagination`);
 
     while (hasMorePages) {
-      logger.info(
-        `[SimPro Quotes] Fetching page ${page} (up to ${pageSize} quotes)...`
-      );
-
       try {
         const params = new URLSearchParams({
           IsClosed: "false",
           pageSize: pageSize.toString(),
           page: page.toString(),
+          // Only get essential fields to speed up the request
+          columns: "ID,Description,Total,Stage",
         });
 
         const endpoint = `/companies/${companyId}/quotes/?${params.toString()}`;
-        const basicQuotes = await this.api.request<SimProQuote[]>(endpoint);
+        logger.debug(`[SimPro Quotes] Page ${page}: ${endpoint}`);
 
-        if (!basicQuotes || basicQuotes.length === 0) {
+        const pageQuotes = await this.api.request<SimProQuote[]>(endpoint);
+
+        if (!pageQuotes || pageQuotes.length === 0) {
           logger.info(
             `[SimPro Quotes] Page ${page}: No quotes found - pagination complete`
           );
@@ -117,46 +150,23 @@ export class SimProQuotes {
         }
 
         logger.info(
-          `[SimPro Quotes] Page ${page}: Found ${basicQuotes.length} basic quotes, getting full details...`
+          `[SimPro Quotes] Page ${page}: Got ${pageQuotes.length} basic quotes`
         );
-
-        // Get full details for ALL quotes on this page
-        for (const basicQuote of basicQuotes) {
-          try {
-            const fullQuote = await this.getQuoteDetails(
-              companyId,
-              basicQuote.ID
-            );
-            allQuotes.push(fullQuote);
-          } catch (error) {
-            logger.warn(
-              `[SimPro Quotes] Failed to get details for quote ${basicQuote.ID}`,
-              { error }
-            );
-            // Use basic quote if we can't get full details
-            allQuotes.push(basicQuote);
-          }
-        }
-
-        logger.info(
-          `[SimPro Quotes] Page ${page}: Processed ${basicQuotes.length} quotes (${allQuotes.length} total so far)`
-        );
+        allQuotes.push(...pageQuotes);
 
         // Check if we got a full page
-        if (basicQuotes.length < pageSize) {
+        if (pageQuotes.length < pageSize) {
           logger.info(
-            `[SimPro Quotes] Page ${page}: Got ${basicQuotes.length} < ${pageSize} quotes - this is the last page`
+            `[SimPro Quotes] Page ${page}: Last page (${pageQuotes.length} < ${pageSize})`
           );
           hasMorePages = false;
         } else {
           page++;
         }
 
-        // Safety limit to prevent runaway pagination
+        // Safety limit
         if (page > 100) {
-          logger.warn(
-            `[SimPro Quotes] Safety limit: Stopping at page 100 (${allQuotes.length} quotes total)`
-          );
+          logger.warn(`[SimPro Quotes] Safety limit: Stopping at page 100`);
           hasMorePages = false;
         }
       } catch (error) {
@@ -166,26 +176,67 @@ export class SimProQuotes {
     }
 
     logger.info(
-      `[SimPro Quotes] Pagination complete: Retrieved ${
-        allQuotes.length
-      } total active quotes from ${page - 1} pages`
+      `[SimPro Quotes] Retrieved ${allQuotes.length} total basic quotes from ${
+        page - 1
+      } pages`
     );
     return allQuotes;
   }
 
   /**
-   * Filter quotes for ALL our criteria
+   * Get full details ONLY for high-value quotes (much more efficient)
    */
-  private filterForValidHighValueQuotes(
+  private async getDetailedQuotes(
+    basicQuotes: SimProQuote[],
+    companyId: number
+  ): Promise<SimProQuote[]> {
+    logger.info(
+      `[SimPro Quotes] Getting full details for ${basicQuotes.length} high-value quotes`
+    );
+
+    const detailedQuotes: SimProQuote[] = [];
+    let processed = 0;
+
+    for (const basicQuote of basicQuotes) {
+      try {
+        processed++;
+        const fullQuote = await this.getQuoteDetails(companyId, basicQuote.ID);
+        detailedQuotes.push(fullQuote);
+
+        if (processed % 10 === 0) {
+          logger.info(
+            `[SimPro Quotes] Progress: ${processed}/${basicQuotes.length} detailed quotes retrieved`
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          `[SimPro Quotes] Failed to get details for quote ${basicQuote.ID}`,
+          { error }
+        );
+        // Use basic quote if we can't get details
+        detailedQuotes.push(basicQuote);
+      }
+    }
+
+    logger.info(
+      `[SimPro Quotes] Retrieved full details for ${detailedQuotes.length} quotes`
+    );
+    return detailedQuotes;
+  }
+
+  /**
+   * Filter detailed quotes by stage and status
+   */
+  private filterByStageAndStatus(
     quotes: SimProQuote[],
     minimumValue: number
   ): SimProQuote[] {
     logger.info(
-      `[SimPro Quotes] Filtering ${quotes.length} active quotes for high-value criteria`
+      `[SimPro Quotes] Filtering ${quotes.length} detailed quotes by stage/status`
     );
 
     const validQuotes = quotes.filter((quote) => {
-      // 1. Check Stage (Complete or Approved)
+      // 1. Check Stage (Complete or Approved) - THIS IS THE KEY FILTER
       const validStages = ["Complete", "Approved"];
       const hasValidStage = validStages.includes(quote.Stage);
 
@@ -209,17 +260,17 @@ export class SimProQuotes {
       const statusName = quote.Status?.Name;
       const hasValidStatus = statusName && validStatuses.includes(statusName);
 
-      // 3. Check value
+      // 3. Double-check value (should already be filtered, but just in case)
       const hasMinimumValue =
         quote.Total?.ExTax && quote.Total.ExTax >= minimumValue;
 
       // 4. Check not closed (should already be filtered, but double-check)
       const isNotClosed = !quote.IsClosed;
 
-      // Log why quotes are being filtered out
+      // Debug logging for each filter
       if (!hasValidStage) {
         logger.debug(
-          `[SimPro Quotes] Quote ${quote.ID} filtered - stage: ${quote.Stage} (need Complete/Approved)`
+          `[SimPro Quotes] Quote ${quote.ID} filtered - stage: "${quote.Stage}" (need Complete/Approved)`
         );
       }
       if (!hasValidStatus) {
@@ -245,7 +296,7 @@ export class SimProQuotes {
 
       if (isValid) {
         logger.debug(
-          `[SimPro Quotes] ✅ Quote ${quote.ID} QUALIFIES: Stage=${quote.Stage}, Status="${statusName}", Value=$${quote.Total?.ExTax}`
+          `[SimPro Quotes] ✅ Quote ${quote.ID} QUALIFIES: Stage="${quote.Stage}", Status="${statusName}", Value=$${quote.Total?.ExTax}`
         );
       }
 
@@ -256,35 +307,14 @@ export class SimProQuotes {
     const stageCompleteApproved = quotes.filter((q) =>
       ["Complete", "Approved"].includes(q.Stage)
     ).length;
-    const validStatusCount = quotes.filter((q) => {
-      const statusName = q.Status?.Name;
-      const validStatuses = [
-        "Quote: To Be Assigned",
-        "Quote: To Be Scheduled",
-        "Quote : To Be Scheduled",
-        "Quote: To Write",
-        "Quote: Visit Scheduled",
-        "Quote : Visit Scheduled",
-        "Quote: In Progress",
-        "Quote : In Progress",
-        "Quote: Won",
-        "Quote : Won",
-        "Quote: On Hold",
-        "Quote : On Hold",
-        "Quote: Quote Due Date Reached",
-        "Quote : Quote Due Date Reached",
-      ];
-      return statusName && validStatuses.includes(statusName);
-    }).length;
     const valueAboveMinimum = quotes.filter(
       (q) => q.Total?.ExTax >= minimumValue
     ).length;
     const notClosed = quotes.filter((q) => !q.IsClosed).length;
 
-    logger.info(`[SimPro Quotes] Filter results:`, {
-      totalQuotes: quotes.length,
+    logger.info(`[SimPro Quotes] Filtering summary:`, {
+      inputQuotes: quotes.length,
       stageCompleteApproved,
-      validStatus: validStatusCount,
       valueAboveMinimum,
       notClosed,
       finalValid: validQuotes.length,
