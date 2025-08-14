@@ -1,4 +1,4 @@
-// lib/services/webhook-service.ts - Simplified webhook processing
+// lib/services/webhook-service.ts - REAL-TIME VERSION
 import { SyncService } from "./sync-service";
 import { SimProWebhookPayload } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -38,11 +38,11 @@ export class WebhookService {
 
       switch (payload.ID) {
         case "quote.created":
-          return await this.handleQuoteCreated(quoteId, companyId);
+          return await this.handleQuoteCreatedRealTime(quoteId, companyId);
 
         case "quote.status":
         case "quote.updated":
-          return await this.handleQuoteUpdated(quoteId, companyId);
+          return await this.handleQuoteUpdatedRealTime(quoteId, companyId);
 
         case "quote.deleted":
           return this.handleQuoteDeleted(quoteId);
@@ -69,63 +69,103 @@ export class WebhookService {
     }
   }
 
-  private async handleQuoteCreated(
+  // 🚀 REAL-TIME: Sync immediately when quote is created
+  private async handleQuoteCreatedRealTime(
     quoteId: number,
     companyId: number
   ): Promise<{ success: boolean; message: string }> {
     logger.info(
-      `[Webhook Service] Processing quote.created for quote ${quoteId}`
+      `[Webhook Service] 🚀 REAL-TIME: Processing quote.created for quote ${quoteId}`
     );
 
     try {
-      // For new quotes, we can trigger a limited sync to process just this quote
-      // This is a simplified approach - in reality, you'd want to check if the quote
-      // meets criteria (>$15k, not closed) before syncing
-
-      // For now, just log that we received the event
-      logger.info(
-        `[Webhook Service] ✅ Quote ${quoteId} created - will be picked up in next sync`
+      // Trigger immediate sync for this specific quote
+      const syncResult = await this.syncService.syncSingleQuote(
+        quoteId,
+        companyId,
+        {
+          minimumQuoteValue: 15000,
+        }
       );
 
-      return {
-        success: true,
-        message: `Quote ${quoteId} creation acknowledged - will sync in next batch`,
-      };
+      if (syncResult.success) {
+        logger.info(
+          `[Webhook Service] ✅ Quote ${quoteId} synced to Monday INSTANTLY!`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} created and synced to Monday.com instantly!`,
+        };
+      } else {
+        logger.warn(
+          `[Webhook Service] ⚠️ Quote ${quoteId} created but didn't meet sync criteria (likely <$15k)`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} created but not synced (below $15k threshold)`,
+        };
+      }
     } catch (error) {
       logger.error(
-        `[Webhook Service] Failed to process quote.created for ${quoteId}`,
+        `[Webhook Service] ❌ Failed to sync quote ${quoteId} immediately`,
         { error }
       );
-      throw error;
+      return {
+        success: false,
+        message: `Quote ${quoteId} creation failed to sync: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      };
     }
   }
 
-  private async handleQuoteUpdated(
+  // 🚀 REAL-TIME: Sync immediately when quote is updated
+  private async handleQuoteUpdatedRealTime(
     quoteId: number,
     companyId: number
   ): Promise<{ success: boolean; message: string }> {
     logger.info(
-      `[Webhook Service] Processing quote update for quote ${quoteId}`
+      `[Webhook Service] 🚀 REAL-TIME: Processing quote update for quote ${quoteId}`
     );
 
     try {
-      // For quote updates, we mainly care about status changes
-      // In the simplified model, we'll let the scheduled sync handle this
-
-      logger.info(
-        `[Webhook Service] ✅ Quote ${quoteId} updated - will be picked up in next sync`
+      // Trigger immediate sync for this updated quote
+      const syncResult = await this.syncService.syncSingleQuote(
+        quoteId,
+        companyId,
+        {
+          minimumQuoteValue: 15000,
+        }
       );
 
-      return {
-        success: true,
-        message: `Quote ${quoteId} update acknowledged - will sync in next batch`,
-      };
+      if (syncResult.success) {
+        logger.info(
+          `[Webhook Service] ✅ Quote ${quoteId} update synced to Monday INSTANTLY!`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} updated and synced to Monday.com instantly!`,
+        };
+      } else {
+        logger.warn(
+          `[Webhook Service] ⚠️ Quote ${quoteId} updated but doesn't meet sync criteria`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} updated but not synced (below $15k threshold or invalid status)`,
+        };
+      }
     } catch (error) {
       logger.error(
-        `[Webhook Service] Failed to process quote update for ${quoteId}`,
+        `[Webhook Service] ❌ Failed to sync quote ${quoteId} update immediately`,
         { error }
       );
-      throw error;
+      return {
+        success: false,
+        message: `Quote ${quoteId} update failed to sync: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      };
     }
   }
 
@@ -134,7 +174,7 @@ export class WebhookService {
     message: string;
   } {
     logger.info(
-      `[Webhook Service] Quote ${quoteId} deleted in SimPro - not deleting from Monday`
+      `[Webhook Service] Quote ${quoteId} deleted in SimPro - preserving in Monday for history`
     );
 
     // We don't delete from Monday when quotes are deleted in SimPro
