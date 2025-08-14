@@ -298,82 +298,71 @@ export class SyncService {
         );
       }
 
-      // STEP 2: Process contacts
+      // STEP 2: Process contacts with account linking
       const contactIds: string[] = [];
       for (const contactData of mappedData.contacts) {
         logger.info(
           `[Sync Service] 👤 Processing contact: ${contactData.contactName}`
         );
 
-        const existingContact = await this.findBySimproId(
+        const contactResult = await this.mondayApi.createContact(
           process.env.MONDAY_CONTACTS_BOARD_ID!,
-          contactData.simproContactId,
-          "contact"
+          contactData
         );
 
-        let contactId: string;
-        if (existingContact) {
-          contactId = existingContact.id;
-          logger.info(
-            `[Sync Service] ✅ Using existing contact: ${existingContact.name}`
-          );
-        } else {
-          const contactResult = await this.mondayApi.createContact(
-            process.env.MONDAY_CONTACTS_BOARD_ID!,
-            contactData
-          );
+        if (contactResult.success && contactResult.itemId) {
+          contactIds.push(contactResult.itemId);
 
-          if (contactResult.success && contactResult.itemId) {
-            contactId = contactResult.itemId;
+          // ✅ LINK CONTACT TO ACCOUNT
+          try {
+            await this.linkContactToAccount(contactResult.itemId, accountId);
             logger.info(
-              `[Sync Service] ✅ Created new contact: ${contactData.contactName}`
+              `[Sync Service] 🔗 Linked contact ${contactResult.itemId} to account ${accountId}`
             );
-          } else {
+          } catch (linkError) {
             logger.warn(
-              `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
+              `[Sync Service] ⚠️ Failed to link contact to account: ${linkError}`
             );
-            continue;
           }
-        }
-
-        if (contactId) {
-          contactIds.push(contactId);
+        } else {
+          logger.warn(
+            `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
+          );
+          continue;
         }
       }
 
-      // STEP 3: Check for existing deal
+      // STEP 3: Create deal with contact linking
       logger.info(
         `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
       );
 
-      const existingDeal = await this.findBySimproId(
+      const dealResult = await this.mondayApi.createDeal(
         process.env.MONDAY_DEALS_BOARD_ID!,
-        quote.ID,
-        "quote"
+        mappedData.deal
       );
 
-      let dealId: string;
-      if (existingDeal) {
-        dealId = existingDeal.id;
-        logger.info(
-          `[Sync Service] ✅ Deal already exists, updating: ${existingDeal.name}`
-        );
+      if (!dealResult.success || !dealResult.itemId) {
+        throw new Error(`Failed to create deal: ${dealResult.error}`);
+      }
 
-        // For webhook updates, we could update the existing deal here
-        // const updateResult = await this.mondayApi.updateItem(dealId, updatedColumnValues);
-      } else {
-        const dealResult = await this.mondayApi.createDeal(
-          process.env.MONDAY_DEALS_BOARD_ID!,
-          mappedData.deal
-        );
+      const dealId = dealResult.itemId;
+      logger.info(
+        `[Sync Service] ✅ Created new deal: ${mappedData.deal.dealName}`
+      );
 
-        if (!dealResult.success || !dealResult.itemId) {
-          throw new Error(`Failed to create deal: ${dealResult.error}`);
+      // ✅ LINK DEAL TO CONTACTS
+      if (contactIds.length > 0) {
+        try {
+          await this.linkDealToContacts(dealId, contactIds);
+          logger.info(
+            `[Sync Service] 🔗 Linked deal ${dealId} to ${contactIds.length} contacts`
+          );
+        } catch (linkError) {
+          logger.warn(
+            `[Sync Service] ⚠️ Failed to link deal to contacts: ${linkError}`
+          );
         }
-        dealId = dealResult.itemId;
-        logger.info(
-          `[Sync Service] ✅ Created new deal: ${mappedData.deal.dealName}`
-        );
       }
 
       logger.info(`[Sync Service] 🎉 Quote ${quoteId} webhook sync complete!`);
@@ -414,6 +403,50 @@ export class SyncService {
       logger.error(`Error finding existing ${type}`, { error });
       return null;
     }
+  }
+
+  // ✅ LINKING: Connect contact to account
+  private async linkContactToAccount(
+    contactId: string,
+    accountId: string
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(item_id: $itemId, column_id: $columnId, value: $value) {
+          id
+        }
+      }
+    `;
+
+    const variables = {
+      itemId: contactId,
+      columnId: "contact_account", // Your contact-to-account relation column
+      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
+    };
+
+    await this.mondayApi.query(mutation, variables);
+  }
+
+  // ✅ LINKING: Connect deal to contacts
+  private async linkDealToContacts(
+    dealId: string,
+    contactIds: string[]
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(item_id: $itemId, column_id: $columnId, value: $value) {
+          id
+        }
+      }
+    `;
+
+    const variables = {
+      itemId: dealId,
+      columnId: "deal_contact", // Your deal-to-contact relation column
+      value: JSON.stringify({ item_ids: contactIds.map((id) => parseInt(id)) }),
+    };
+
+    await this.mondayApi.query(mutation, variables);
   }
 
   async healthCheck(): Promise<{

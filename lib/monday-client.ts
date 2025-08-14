@@ -20,7 +20,8 @@ export class MondayClient {
     this.apiToken = config.apiToken;
   }
 
-  private async query<T>(
+  // ✅ EXPOSED: Make query method public for linking operations
+  async query<T>(
     query: string,
     variables: Record<string, any> = {}
   ): Promise<T> {
@@ -168,11 +169,31 @@ export class MondayClient {
     accountData: MondayAccountData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
+      // ✅ FIRST: Check if account already exists
+      const existing = await this.findItemBySimProId(
+        boardId,
+        accountData.simproCustomerId,
+        "customer"
+      );
+      if (existing) {
+        console.log(
+          `[Monday] ✅ Using existing account: ${existing.name} (${existing.id})`
+        );
+        return {
+          success: true,
+          itemId: existing.id,
+        };
+      }
+
+      // ✅ Create new account with proper notes for tracking
       const columnValues: MondayColumnValues = {
-        text8: accountData.industry || "Building Services",
-        long_text: `${accountData.description || ""}\nSimPro Customer ID: ${
-          accountData.simproCustomerId
-        }`,
+        company_description: `Customer from SimPro
+Email: ${accountData.description || "Not provided"}
+Phone: Not provided
+Address: Not provided`,
+        text_mktrez5x: `SimPro Customer ID: ${accountData.simproCustomerId}
+Last Sync: ${new Date().toISOString()}
+Source: SimPro Webhook`,
       };
 
       const item = await this.createItem(
@@ -181,6 +202,9 @@ export class MondayClient {
         columnValues
       );
 
+      console.log(
+        `[Monday] ✅ Created new account: ${accountData.accountName} (${item.id})`
+      );
       return {
         success: true,
         itemId: item.id,
@@ -199,12 +223,49 @@ export class MondayClient {
     contactData: MondayContactData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      const columnValues: MondayColumnValues = {
-        text8: contactData.companyName,
-        text4: contactData.contactType,
-        long_text: contactData.siteName || "",
-        text: `SimPro Contact ID: ${contactData.simproContactId}, Customer ID: ${contactData.simproCustomerId}`,
-      };
+      // ✅ FIRST: Check if contact already exists
+      const existing = await this.findItemBySimProId(
+        boardId,
+        contactData.simproContactId,
+        "contact"
+      );
+      if (existing) {
+        console.log(
+          `[Monday] ✅ Using existing contact: ${existing.name} (${existing.id})`
+        );
+        return {
+          success: true,
+          itemId: existing.id,
+        };
+      }
+
+      // ✅ Create new contact with proper columns and notes
+      const columnValues: MondayColumnValues = {};
+
+      // Email column
+      if (contactData.email) {
+        columnValues["contact_email"] = {
+          email: contactData.email,
+          text: contactData.email,
+        };
+      }
+
+      // Phone column
+      if (contactData.phone) {
+        const cleanPhone = contactData.phone
+          .replace(/\s+/g, "")
+          .replace(/[^\d+]/g, "");
+        columnValues["contact_phone"] = cleanPhone;
+      }
+
+      // Notes column with SimPro tracking
+      columnValues["text_mktr67s0"] = `SimPro Contact ID: ${
+        contactData.simproContactId
+      }
+Contact Type: ${contactData.contactType || "customer"}
+Department: ${contactData.department || "Not specified"}
+Position: ${contactData.position || "Not specified"}
+Last Sync: ${new Date().toISOString()}`;
 
       const item = await this.createItem(
         boardId,
@@ -212,6 +273,9 @@ export class MondayClient {
         columnValues
       );
 
+      console.log(
+        `[Monday] ✅ Created new contact: ${contactData.contactName} (${item.id})`
+      );
       return {
         success: true,
         itemId: item.id,
@@ -230,19 +294,58 @@ export class MondayClient {
     dealData: MondayDealData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      const columnValues: MondayColumnValues = {
-        numbers: dealData.dealValue,
-        status: { label: dealData.stage },
-        person: dealData.salesperson || "",
-        date: dealData.dateIssued || new Date().toISOString().split("T")[0],
-        date4:
-          dealData.dueDate ||
-          dealData.dateIssued ||
-          new Date().toISOString().split("T")[0],
-        text8: dealData.siteName || "",
-        text4: dealData.accountName,
-        long_text: `SimPro Quote ID: ${dealData.simproQuoteId}`,
+      // ✅ FIRST: Check if deal already exists
+      const existing = await this.findItemBySimProId(
+        boardId,
+        dealData.simproQuoteId,
+        "quote"
+      );
+      if (existing) {
+        console.log(
+          `[Monday] ✅ Using existing deal: ${existing.name} (${existing.id})`
+        );
+        return {
+          success: true,
+          itemId: existing.id,
+        };
+      }
+
+      // ✅ Create new deal with proper columns
+      const columnValues: MondayColumnValues = {};
+
+      // Deal value
+      if (dealData.dealValue) {
+        columnValues["deal_value"] = dealData.dealValue;
+      }
+
+      // Status/Stage mapping
+      const statusMapping: { [key: string]: string } = {
+        "Quote: Sent": "Quote: Sent",
+        "Quote: Won": "Quote: Won",
+        "Quote: On Hold": "Quote: On Hold",
+        "Quote: To Be Scheduled": "Quote: To Be Scheduled",
+        "Quote: To Write": "Quote: To Write",
+        "Quote: To Be Assigned": "Quote: To Be Assigned",
+        "Quote Visit Scheduled": "Quote Visit Scheduled",
+        "Quote: Due Date Reached": "Quote: Due Date Reached",
       };
+
+      const mondayStatus = statusMapping[dealData.stage] || "Quote: Sent";
+      columnValues["color_mktrw6k3"] = { label: mondayStatus };
+
+      // Close date
+      if (dealData.closeDate) {
+        columnValues["deal_expected_close_date"] = dealData.closeDate;
+      }
+
+      // Notes with SimPro tracking
+      columnValues["text_mktrtr9b"] = `SimPro Quote ID: ${
+        dealData.simproQuoteId
+      }
+Customer: ${dealData.accountName}
+Salesperson: ${dealData.salesperson || "Not specified"}
+Site: ${dealData.siteName || "Not specified"}
+Last Sync: ${new Date().toISOString()}`;
 
       const item = await this.createItem(
         boardId,
@@ -250,6 +353,9 @@ export class MondayClient {
         columnValues
       );
 
+      console.log(
+        `[Monday] ✅ Created new deal: ${dealData.dealName} (${item.id})`
+      );
       return {
         success: true,
         itemId: item.id,
