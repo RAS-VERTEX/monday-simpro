@@ -284,7 +284,7 @@ export class MondayClient {
     }
   }
 
-  // ✅ FIXED: Added safe null checks for column_values
+  // ✅ FIXED: Updated GraphQL query for Monday API v2024-04
   async findItemBySimProId(
     boardId: string,
     simproId: number,
@@ -301,13 +301,15 @@ export class MondayClient {
     const query = `
       query ($boardId: ID!) {
         boards(ids: [$boardId]) {
-          items {
-            id
-            name
-            column_values {
+          items_page(limit: 50) {
+            items {
               id
-              text
-              value
+              name
+              column_values {
+                id
+                text
+                value
+              }
             }
           }
         }
@@ -315,16 +317,15 @@ export class MondayClient {
     `;
 
     try {
-      const data = await this.query<{ boards: Array<{ items: MondayItem[] }> }>(
-        query,
-        { boardId }
-      );
+      const data = await this.query<{
+        boards: Array<{ items_page: { items: MondayItem[] } }>;
+      }>(query, { boardId });
 
       if (!data.boards || data.boards.length === 0) {
         return null;
       }
 
-      const items = data.boards[0].items;
+      const items = data.boards[0].items_page?.items || [];
 
       for (const item of items) {
         // ✅ SAFE NULL CHECK: Check if column_values exists before iterating
