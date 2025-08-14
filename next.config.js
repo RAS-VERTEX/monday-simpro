@@ -4,28 +4,28 @@ const nextConfig = {
   swcMinify: true,
   api: {
     bodyParser: {
-      sizeLimit: '2mb',
+      sizeLimit: "2mb",
     },
     responseLimit: false,
   },
   async headers() {
     return [
       {
-        source: '/api/:path*',
+        source: "/api/:path*",
         headers: [
           {
-            key: 'X-Content-Type-Options',
-            value: 'nosniff',
+            key: "X-Content-Type-Options",
+            value: "nosniff",
           },
           {
-            key: 'X-Frame-Options',
-            value: 'DENY',
+            key: "X-Frame-Options",
+            value: "DENY",
           },
         ],
       },
     ];
   },
-  output: 'standalone',
+  output: "standalone",
   typescript: {
     ignoreBuildErrors: false,
   },
