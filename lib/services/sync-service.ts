@@ -1,4 +1,4 @@
-// lib/services/sync-service.ts - COMPLETE VERSION with full webhook sync
+// lib/services/sync-service.ts - EFFICIENT webhook sync (no bulk scanning)
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
@@ -41,13 +41,14 @@ export class SyncService {
     this.simproApi = new SimProApi(simproConfig);
     this.simproQuotes = new SimProQuotes(this.simproApi);
 
-    // Initialize Monday client - SIMPLIFIED
+    // Initialize Monday client
     this.mondayApi = new MondayClient({ apiToken: mondayConfig.apiToken });
 
     // Initialize mapping service
     this.mappingService = new MappingService();
   }
 
+  // ✅ BATCH SYNC: For manual/cron syncing (scans all quotes)
   async syncSimProToMonday(
     config: SyncConfig,
     limit?: number
@@ -66,14 +67,14 @@ export class SyncService {
 
     try {
       logger.info(
-        "[Sync Service] Starting SIMPLIFIED sync with direct Monday client",
+        "[Sync Service] Starting BATCH sync with direct Monday client",
         {
           minimumValue: config.minimumQuoteValue,
           limit,
         }
       );
 
-      // Get ALL valid quotes first
+      // Get ALL valid quotes first (only for batch sync)
       const allValidQuotes = await this.simproQuotes.getActiveHighValueQuotes(
         config.minimumQuoteValue
       );
@@ -189,7 +190,7 @@ export class SyncService {
     }
   }
 
-  // ✅ COMPLETE: Full single quote sync with all relationships and duplicate checking
+  // ✅ WEBHOOK SYNC: Efficient single quote processing (no bulk scanning)
   async syncSingleQuote(
     quoteId: number,
     companyId: number,
@@ -197,30 +198,75 @@ export class SyncService {
   ): Promise<{ success: boolean; message: string }> {
     try {
       logger.info(
-        `[Sync Service] 🚀 FULL SYNC: Processing single quote ${quoteId}`
+        `[Sync Service] 🚀 WEBHOOK: Processing single quote ${quoteId}`
       );
 
-      // Get the specific quote with enhanced details (same as batch sync)
-      const quotes = await this.simproQuotes.getActiveHighValueQuotes(
-        config.minimumQuoteValue
-      );
-      const quote = quotes.find((q) => q.ID === quoteId);
+      // Get ONLY this specific quote (not all quotes!)
+      const quote = await this.simproQuotes.getQuoteDetails(companyId, quoteId);
 
-      if (!quote) {
+      // Quick validation checks
+      if (!quote.Total?.ExTax || quote.Total.ExTax < config.minimumQuoteValue) {
         return {
           success: false,
-          message: `Quote ${quoteId} not found or doesn't meet sync criteria (value, stage, status)`,
+          message: `Quote ${quoteId} value $${
+            quote.Total?.ExTax || 0
+          } doesn't meet minimum $${config.minimumQuoteValue}`,
+        };
+      }
+
+      // Check if quote is in valid stage
+      const validStages = ["Complete", "Approved"];
+      if (!validStages.includes(quote.Stage)) {
+        return {
+          success: false,
+          message: `Quote ${quoteId} stage "${quote.Stage}" is not valid (need Complete/Approved)`,
+        };
+      }
+
+      // Check valid status
+      const validStatuses = [
+        "Quote: To Be Assigned",
+        "Quote: To Be Scheduled",
+        "Quote : To Be Scheduled",
+        "Quote: To Write",
+        "Quote: Visit Scheduled",
+        "Quote : Visit Scheduled",
+        "Quote: In Progress",
+        "Quote : In Progress",
+        "Quote: Won",
+        "Quote : Won",
+        "Quote: On Hold",
+        "Quote : On Hold",
+        "Quote: Sent",
+        "Quote : Sent",
+        "Quote : Sent ",
+        "Quote: Quote Due Date Reached",
+        "Quote : Quote Due Date Reached",
+      ];
+      const statusName = quote.Status?.Name?.trim();
+      if (!statusName || !validStatuses.includes(statusName)) {
+        return {
+          success: false,
+          message: `Quote ${quoteId} status "${statusName}" is not valid for sync`,
+        };
+      }
+
+      // Check if not closed
+      if (quote.IsClosed === true) {
+        return {
+          success: false,
+          message: `Quote ${quoteId} is closed and won't be synced`,
         };
       }
 
       logger.info(
-        `[Sync Service] 📋 Quote ${quoteId} meets criteria - starting FULL sync process`
+        `[Sync Service] ✅ Quote ${quoteId} passes validation - syncing to Monday`
       );
 
-      // Use the SAME sync logic as the main batch sync
-      const mappedData = this.mappingService.mapQuoteToMonday(quote);
+      // Map to Monday format
+      const mappedData = this.mappingService.mapQuoteToMonday(quote as any);
 
-      // STEP 1: Create/find account (check for existing first)
+      // STEP 1: Check for existing account first
       logger.info(
         `[Sync Service] 🏢 Processing account: ${mappedData.account.accountName}`
       );
@@ -235,7 +281,7 @@ export class SyncService {
       if (existingAccount) {
         accountId = existingAccount.id;
         logger.info(
-          `[Sync Service] ✅ Using existing account: ${existingAccount.name} (${accountId})`
+          `[Sync Service] ✅ Using existing account: ${existingAccount.name}`
         );
       } else {
         const accountResult = await this.mondayApi.createAccount(
@@ -248,11 +294,11 @@ export class SyncService {
         }
         accountId = accountResult.itemId;
         logger.info(
-          `[Sync Service] ✅ Created new account: ${mappedData.account.accountName} (${accountId})`
+          `[Sync Service] ✅ Created new account: ${mappedData.account.accountName}`
         );
       }
 
-      // STEP 2: Create/find contacts (check for existing first)
+      // STEP 2: Process contacts
       const contactIds: string[] = [];
       for (const contactData of mappedData.contacts) {
         logger.info(
@@ -269,7 +315,7 @@ export class SyncService {
         if (existingContact) {
           contactId = existingContact.id;
           logger.info(
-            `[Sync Service] ✅ Using existing contact: ${existingContact.name} (${contactId})`
+            `[Sync Service] ✅ Using existing contact: ${existingContact.name}`
           );
         } else {
           const contactResult = await this.mondayApi.createContact(
@@ -280,7 +326,7 @@ export class SyncService {
           if (contactResult.success && contactResult.itemId) {
             contactId = contactResult.itemId;
             logger.info(
-              `[Sync Service] ✅ Created new contact: ${contactData.contactName} (${contactId})`
+              `[Sync Service] ✅ Created new contact: ${contactData.contactName}`
             );
           } else {
             logger.warn(
@@ -295,7 +341,7 @@ export class SyncService {
         }
       }
 
-      // STEP 3: Create/find deal (check for existing first)
+      // STEP 3: Check for existing deal
       logger.info(
         `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
       );
@@ -310,11 +356,11 @@ export class SyncService {
       if (existingDeal) {
         dealId = existingDeal.id;
         logger.info(
-          `[Sync Service] ✅ Using existing deal: ${existingDeal.name} (${dealId})`
+          `[Sync Service] ✅ Deal already exists, updating: ${existingDeal.name}`
         );
 
-        // For existing deals, we could update them here if needed
-        // await this.mondayApi.updateItem(dealId, updatedColumnValues);
+        // For webhook updates, we could update the existing deal here
+        // const updateResult = await this.mondayApi.updateItem(dealId, updatedColumnValues);
       } else {
         const dealResult = await this.mondayApi.createDeal(
           process.env.MONDAY_DEALS_BOARD_ID!,
@@ -326,30 +372,21 @@ export class SyncService {
         }
         dealId = dealResult.itemId;
         logger.info(
-          `[Sync Service] ✅ Created new deal: ${mappedData.deal.dealName} (${dealId})`
+          `[Sync Service] ✅ Created new deal: ${mappedData.deal.dealName}`
         );
       }
 
-      // STEP 4: Link relationships (mirror columns)
-      logger.info(
-        `[Sync Service] 🔗 Linking relationships for quote ${quoteId}`
-      );
-
-      // Note: In your simplified architecture, relationships are set during creation
-      // The Monday API should handle linking based on the item_ids we provided
-      // Mirror columns auto-populate based on these relationships
-
-      logger.info(`[Sync Service] ✅ Quote ${quoteId} FULLY synced to Monday!`);
+      logger.info(`[Sync Service] 🎉 Quote ${quoteId} webhook sync complete!`);
       logger.info(
         `[Sync Service] 📊 Summary: Account(${accountId}), Contacts(${contactIds.length}), Deal(${dealId})`
       );
 
       return {
         success: true,
-        message: `Quote ${quoteId} fully synced: Account, ${contactIds.length} contacts, and deal created with all relationships`,
+        message: `Quote ${quoteId} successfully synced via webhook: "${mappedData.deal.dealName}"`,
       };
     } catch (error) {
-      logger.error(`[Sync Service] ❌ Failed to fully sync quote ${quoteId}`, {
+      logger.error(`[Sync Service] ❌ Failed to sync single quote ${quoteId}`, {
         error,
       });
       return {
@@ -359,21 +396,13 @@ export class SyncService {
     }
   }
 
-  // ✅ ADDED: Helper method to find existing items by SimPro ID
+  // ✅ HELPER: Find existing items by SimPro ID to avoid duplicates
   private async findBySimproId(
     boardId: string,
     simproId: number,
     type: "customer" | "contact" | "quote"
   ): Promise<any> {
     try {
-      const searchText = `SimPro ${
-        type === "customer"
-          ? "Customer"
-          : type === "contact"
-          ? "Contact"
-          : "Quote"
-      } ID: ${simproId}`;
-
       // Use the Monday client's search method
       const result = await this.mondayApi.findItemBySimProId(
         boardId,
@@ -405,7 +434,6 @@ export class SyncService {
 
     try {
       const testStart = Date.now();
-      // ✅ Use proper method call
       const testResult = await this.simproApi.request("/companies");
       simproResponseTime = Date.now() - testStart;
       simproStatus = "up";
@@ -430,12 +458,12 @@ export class SyncService {
       simpro: {
         status: simproStatus,
         lastCheck: new Date().toISOString(),
-        responseTime: simproResponseTime, // ✅ Fixed: now matches expected format
+        responseTime: simproResponseTime,
       },
       monday: {
         status: mondayStatus,
         lastCheck: new Date().toISOString(),
-        responseTime: mondayResponseTime, // ✅ Fixed: now matches expected format
+        responseTime: mondayResponseTime,
       },
     };
   }
