@@ -33,13 +33,28 @@ export interface SimProQuote {
   };
   DueDate?: string;
   DateIssued?: string;
+  IsClosed?: boolean; // ✅ Added missing property
   Customer: {
     ID: number;
     CompanyName: string;
   };
+  CustomerContact?: {
+    // ✅ Added missing property
+    ID: number;
+    Name: string;
+    GivenName?: string; // ✅ Added missing properties
+    FamilyName?: string;
+  };
   Site?: {
     ID: number;
     Name: string;
+  };
+  SiteContact?: {
+    // ✅ Added missing property
+    ID: number;
+    Name: string;
+    GivenName?: string; // ✅ Added missing properties
+    FamilyName?: string;
   };
   Salesperson?: {
     ID: number;

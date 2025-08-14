@@ -64,6 +64,8 @@ export interface MondayContactData {
   phone?: string;
   contactType?: string;
   siteName?: string;
+  department?: string; // ✅ Added missing property
+  position?: string; // ✅ Added missing property
   simproContactId: number;
   simproCustomerId: number;
 }

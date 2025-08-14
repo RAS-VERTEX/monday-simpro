@@ -1,4 +1,4 @@
-// lib/clients/simpro/simpro-quotes.ts - COMPLETE FINAL VERSION
+// lib/clients/simpro/simpro-quotes.ts - SAFE VERSION with null checks
 import { SimProApi } from "./simpro-api";
 import { SimProQuote } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -31,8 +31,7 @@ export class SimProQuotes {
   constructor(private api: SimProApi) {}
 
   /**
-   * FINAL VERSION: Get all high-value quotes with Complete/Approved stage
-   * This should find all 73 qualifying quotes
+   * SAFE VERSION: Get all high-value quotes with Complete/Approved stage
    */
   async getActiveHighValueQuotes(
     minimumValue: number = 15000
@@ -41,13 +40,10 @@ export class SimProQuotes {
 
     // FORCE VISIBLE LOGS TO CONFIRM NEW CODE IS RUNNING
     logger.error(
-      `🚨 FINAL VERSION RUNNING! Looking for $${minimumValue}+ quotes in Complete/Approved stage`
+      `🚨 SAFE VERSION RUNNING! Looking for $${minimumValue}+ quotes in Complete/Approved stage`
     );
     console.log(
-      `🚨 FINAL VERSION RUNNING! Looking for $${minimumValue}+ quotes in Complete/Approved stage`
-    );
-    console.error(
-      `🚨 FINAL VERSION RUNNING! Looking for $${minimumValue}+ quotes in Complete/Approved stage`
+      `🚨 SAFE VERSION RUNNING! Looking for $${minimumValue}+ quotes in Complete/Approved stage`
     );
 
     try {
@@ -62,13 +58,15 @@ export class SimProQuotes {
       logger.error(`📊 TOTAL BASIC QUOTES RETRIEVED: ${basicQuotes.length}`);
       console.log(`📊 TOTAL BASIC QUOTES RETRIEVED: ${basicQuotes.length}`);
 
-      // Step 2: Filter by value first (efficient)
+      // Step 2: Filter by value first (efficient) - WITH SAFE NULL CHECKS
       const highValueBasicQuotes = basicQuotes.filter((quote) => {
         const hasHighValue =
-          quote.Total?.ExTax && quote.Total.ExTax >= minimumValue;
+          quote.Total?.ExTax !== undefined && quote.Total.ExTax >= minimumValue;
         if (hasHighValue) {
           console.log(
-            `💰 High-value quote found: ID=${quote.ID}, Value=$${quote.Total.ExTax}`
+            `💰 High-value quote found: ID=${quote.ID}, Value=$${
+              quote.Total?.ExTax || 0
+            }`
           );
         }
         return hasHighValue;
@@ -268,7 +266,7 @@ export class SimProQuotes {
   }
 
   /**
-   * Filter by stage and status - this is where we apply Complete/Approved filter
+   * Filter by stage and status - SAFE VERSION with null checks
    */
   private filterByStageAndStatus(
     quotes: SimProQuote[],
@@ -286,7 +284,7 @@ export class SimProQuotes {
       const validStages = ["Complete", "Approved"];
       const hasValidStage = validStages.includes(quote.Stage);
 
-      // 2. Check Status (handle SimPro's extra spaces)
+      // 2. Check Status (handle SimPro's extra spaces) - SAFE NULL CHECK
       const validStatuses = [
         "Quote: To Be Assigned",
         "Quote: To Be Scheduled",
@@ -307,14 +305,16 @@ export class SimProQuotes {
         "Quote : Sent",
       ];
       const statusName = quote.Status?.Name;
-      const hasValidStatus = statusName && validStatuses.includes(statusName);
+      const hasValidStatus = statusName
+        ? validStatuses.includes(statusName)
+        : false;
 
-      // 3. Double-check value
+      // 3. Double-check value - SAFE NULL CHECK
       const hasMinimumValue =
-        quote.Total?.ExTax && quote.Total.ExTax >= minimumValue;
+        quote.Total?.ExTax !== undefined && quote.Total.ExTax >= minimumValue;
 
-      // 4. Check not closed
-      const isNotClosed = !quote.IsClosed;
+      // 4. Check not closed - SAFE NULL CHECK
+      const isNotClosed = quote.IsClosed !== true; // Default to false if undefined
 
       // Debug each filter
       if (!hasValidStage) {
@@ -324,7 +324,9 @@ export class SimProQuotes {
       }
       if (!hasValidStatus) {
         console.log(
-          `❌ Quote ${quote.ID} filtered - status: "${statusName}" (not in valid list)`
+          `❌ Quote ${quote.ID} filtered - status: "${
+            statusName || "undefined"
+          }" (not in valid list)`
         );
       }
       if (!hasMinimumValue) {
@@ -336,7 +338,9 @@ export class SimProQuotes {
       }
       if (!isNotClosed) {
         console.log(
-          `❌ Quote ${quote.ID} filtered - is closed: ${quote.IsClosed}`
+          `❌ Quote ${quote.ID} filtered - is closed: ${
+            quote.IsClosed || false
+          }`
         );
       }
 
@@ -352,14 +356,14 @@ export class SimProQuotes {
       return isValid;
     });
 
-    // Summary statistics
+    // Summary statistics - SAFE NULL CHECKS
     const stageCompleteApproved = quotes.filter((q) =>
       ["Complete", "Approved"].includes(q.Stage)
     ).length;
     const valueAboveMinimum = quotes.filter(
-      (q) => q.Total?.ExTax >= minimumValue
+      (q) => q.Total?.ExTax !== undefined && q.Total.ExTax >= minimumValue
     ).length;
-    const notClosed = quotes.filter((q) => !q.IsClosed).length;
+    const notClosed = quotes.filter((q) => q.IsClosed !== true).length;
 
     const filterSummary = {
       inputQuotes: quotes.length,
@@ -391,7 +395,7 @@ export class SimProQuotes {
   }
 
   /**
-   * Enhance quotes with customer and contact details
+   * Enhance quotes with customer and contact details - SAFE VERSION
    */
   private async batchEnhanceQuotes(
     quotes: SimProQuote[],
@@ -399,7 +403,7 @@ export class SimProQuotes {
   ): Promise<EnhancedSimProQuote[]> {
     logger.debug(`🔧 Batch enhancing ${quotes.length} qualifying quotes...`);
 
-    // Collect unique IDs to minimize API calls
+    // Collect unique IDs to minimize API calls - SAFE NULL CHECKS
     const customerIds = quotes
       .map((q) => q.Customer?.ID)
       .filter((id): id is number => Boolean(id));
@@ -420,16 +424,16 @@ export class SimProQuotes {
       this.fetchContactDetails(uniqueContactIds, companyId),
     ]);
 
-    // Enhance quotes with fetched details
+    // Enhance quotes with fetched details - SAFE NULL CHECKS
     const enhancedQuotes: EnhancedSimProQuote[] = quotes.map((quote) => {
       const enhanced: EnhancedSimProQuote = { ...quote };
 
-      // Add customer details
+      // Add customer details - SAFE NULL CHECK
       if (quote.Customer?.ID && customerDetailsMap.has(quote.Customer.ID)) {
         enhanced.CustomerDetails = customerDetailsMap.get(quote.Customer.ID);
       }
 
-      // Add customer contact details
+      // Add customer contact details - SAFE NULL CHECK
       if (
         quote.CustomerContact?.ID &&
         contactDetailsMap.has(quote.CustomerContact.ID)
@@ -439,7 +443,7 @@ export class SimProQuotes {
         );
       }
 
-      // Add site contact details
+      // Add site contact details - SAFE NULL CHECK
       if (
         quote.SiteContact?.ID &&
         contactDetailsMap.has(quote.SiteContact.ID)
@@ -469,14 +473,14 @@ export class SimProQuotes {
 
     for (const customerId of customerIds) {
       try {
-        const customer = await this.api.request(
+        const customer = (await this.api.request(
           `/companies/${companyId}/customers/companies/${customerId}`
-        );
+        )) as any; // ✅ Type assertion to fix 'unknown' error
         customerMap.set(customerId, {
-          email: customer.Email,
-          phone: customer.Phone,
-          altPhone: customer.AltPhone,
-          address: customer.Address,
+          email: customer?.Email,
+          phone: customer?.Phone,
+          altPhone: customer?.AltPhone,
+          address: customer?.Address,
         });
       } catch (error) {
         logger.warn(`⚠️ Failed to fetch customer ${customerId}`, { error });
@@ -497,15 +501,15 @@ export class SimProQuotes {
 
     for (const contactId of contactIds) {
       try {
-        const contact = await this.api.request(
+        const contact = (await this.api.request(
           `/companies/${companyId}/contacts/${contactId}`
-        );
+        )) as any; // ✅ Type assertion to fix 'unknown' error
         contactMap.set(contactId, {
-          Email: contact.Email,
-          WorkPhone: contact.WorkPhone,
-          CellPhone: contact.CellPhone,
-          Department: contact.Department,
-          Position: contact.Position,
+          Email: contact?.Email,
+          WorkPhone: contact?.WorkPhone,
+          CellPhone: contact?.CellPhone,
+          Department: contact?.Department,
+          Position: contact?.Position,
         });
       } catch (error) {
         logger.warn(`⚠️ Failed to fetch contact ${contactId}`, { error });
