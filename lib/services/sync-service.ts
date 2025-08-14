@@ -411,8 +411,8 @@ export class SyncService {
     accountId: string
   ): Promise<void> {
     const mutation = `
-      mutation ($itemId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(item_id: $itemId, column_id: $columnId, value: $value) {
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) {
           id
         }
       }
@@ -420,6 +420,7 @@ export class SyncService {
 
     const variables = {
       itemId: contactId,
+      boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
       columnId: "contact_account", // Your contact-to-account relation column
       value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
     };
@@ -433,8 +434,8 @@ export class SyncService {
     contactIds: string[]
   ): Promise<void> {
     const mutation = `
-      mutation ($itemId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(item_id: $itemId, column_id: $columnId, value: $value) {
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) {
           id
         }
       }
@@ -442,6 +443,7 @@ export class SyncService {
 
     const variables = {
       itemId: dealId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
       columnId: "deal_contact", // Your deal-to-contact relation column
       value: JSON.stringify({ item_ids: contactIds.map((id) => parseInt(id)) }),
     };
