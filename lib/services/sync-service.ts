@@ -189,40 +189,88 @@ export class SyncService {
     }
   }
 
-  // ✅ ADDED: Single quote sync for webhooks
+  // ✅ UPDATED: Real single quote sync for webhooks
   async syncSingleQuote(
     quoteId: number,
     companyId: number,
     config: { minimumQuoteValue: number }
   ): Promise<{ success: boolean; message: string }> {
     try {
-      logger.info(`[Sync Service] Syncing single quote ${quoteId}`);
+      logger.info(
+        `[Sync Service] 🚀 REAL-TIME: Syncing single quote ${quoteId}`
+      );
 
-      // Get the specific quote
+      // Get the specific quote with full details
       const quote = await this.simproQuotes.getQuoteDetails(companyId, quoteId);
 
       // Check if it meets criteria
       if (!quote.Total?.ExTax || quote.Total.ExTax < config.minimumQuoteValue) {
         return {
           success: false,
-          message: `Quote ${quoteId} doesn't meet minimum value criteria ($${config.minimumQuoteValue})`,
+          message: `Quote ${quoteId} doesn't meet minimum value criteria (${config.minimumQuoteValue})`,
         };
       }
 
-      // Map and sync (simplified version)
+      // Check if quote is in valid stage (same logic as main sync)
+      const validStages = ["Complete", "Approved"];
+      if (!validStages.includes(quote.Stage)) {
+        return {
+          success: false,
+          message: `Quote ${quoteId} stage "${quote.Stage}" is not valid (need Complete/Approved)`,
+        };
+      }
+
+      // ✅ REAL SYNC: Map and sync to Monday
       const mappedData = this.mappingService.mapQuoteToMonday(quote as any);
 
-      // Just log for now - you could implement actual sync here
+      logger.info(`[Sync Service] 📋 Creating account for quote ${quoteId}`);
+
+      // Create account
+      const accountResult = await this.mondayApi.createAccount(
+        process.env.MONDAY_ACCOUNTS_BOARD_ID!,
+        mappedData.account
+      );
+
+      if (!accountResult.success || !accountResult.itemId) {
+        throw new Error(`Failed to create account: ${accountResult.error}`);
+      }
+
+      logger.info(`[Sync Service] 👥 Creating contacts for quote ${quoteId}`);
+
+      // Create contacts
+      const contactIds: string[] = [];
+      for (const contactData of mappedData.contacts) {
+        const contactResult = await this.mondayApi.createContact(
+          process.env.MONDAY_CONTACTS_BOARD_ID!,
+          contactData
+        );
+        if (contactResult.success && contactResult.itemId) {
+          contactIds.push(contactResult.itemId);
+        }
+      }
+
+      logger.info(`[Sync Service] 💼 Creating deal for quote ${quoteId}`);
+
+      // Create deal
+      const dealResult = await this.mondayApi.createDeal(
+        process.env.MONDAY_DEALS_BOARD_ID!,
+        mappedData.deal
+      );
+
+      if (!dealResult.success || !dealResult.itemId) {
+        throw new Error(`Failed to create deal: ${dealResult.error}`);
+      }
+
       logger.info(
-        `[Sync Service] Quote ${quoteId} would be synced: ${mappedData.deal.dealName}`
+        `[Sync Service] ✅ Quote ${quoteId} ACTUALLY synced to Monday! Deal: ${mappedData.deal.dealName}`
       );
 
       return {
         success: true,
-        message: `Quote ${quoteId} synced successfully`,
+        message: `Quote ${quoteId} successfully synced to Monday.com as "${mappedData.deal.dealName}"`,
       };
     } catch (error) {
-      logger.error(`[Sync Service] Failed to sync single quote ${quoteId}`, {
+      logger.error(`[Sync Service] ❌ Failed to sync single quote ${quoteId}`, {
         error,
       });
       return {
