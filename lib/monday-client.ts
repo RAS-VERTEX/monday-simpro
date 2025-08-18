@@ -466,7 +466,6 @@ Last Sync: ${new Date().toISOString()}`;
     }
   }
 
-  // ✅ EFFICIENT: Only update missing email/phone for existing contacts
   private async updateMissingContactFields(
     contactId: string,
     boardId: string,
