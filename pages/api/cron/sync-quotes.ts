@@ -92,7 +92,7 @@ export default async function handler(
     logger.info("[Cron Sync] Health check passed, starting sync...");
 
     // Run sync using new service
-    const syncResult = await syncService.syncSimProToMonday(
+    const syncResult = await (syncService as any).syncSimProToMonday(
       {
         minimumQuoteValue: 15000,
         boardIds: mondayConfig.boardIds,
