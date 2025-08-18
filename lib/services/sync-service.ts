@@ -172,6 +172,10 @@ export class SyncService {
         "Quote : Sent ",
         "Quote: Quote Due Date Reached",
         "Quote : Quote Due Date Reached",
+        "Quote: Archived - Not Won",
+        "Quote : Archived - Not Won",
+        "Quote: Archived - Won",
+        "Quote : Archived - Won",
       ];
       const statusName = basicQuote.Status?.Name?.trim();
       if (!statusName || !validStatuses.includes(statusName)) {
@@ -627,7 +631,7 @@ export class SyncService {
     await this.mondayApi.query(mutation, {
       itemId: dealId,
       boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      columnId: "deal_account", // This should match your Monday column ID for deal-to-account relationship
+      columnId: "deal_account",
       value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
     });
   }

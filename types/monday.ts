@@ -97,12 +97,12 @@ export type MondayDealStage =
   | "Quote Visit Scheduled"
   | "Quote: Due Date Reached"
   | "Quote: In Progress"
-
-  // ✅ CRITICAL: Won/Lost statuses that trigger Monday automations
-  | "Quote: Won" // → Monday automation moves to Closed Won
-  | "Quote : Won" // → Handle SimPro space variations
-  | "Quote: Archived - Not Won" // → Monday automation moves to Closed Lost
-  | "Quote : Archived - Not Won"; // → Handle SimPro space variations
+  | "Quote: Won"
+  | "Quote : Won"
+  | "Quote: Archived - Not Won"
+  | "Quote : Archived - Not Won"
+  | "Quote: Archived - Not Won"
+  | "Quote : Archived - Not Won";
 
 // ============================================================================
 // CONFIGURATION TYPES

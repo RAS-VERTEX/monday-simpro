@@ -77,6 +77,7 @@ export class MappingService {
     const cleanStatus = simproStatus.trim();
 
     const statusMapping: { [key: string]: MondayDealStage } = {
+      // Active quote statuses
       "Quote: Sent": "Quote: Sent",
       "Quote : Sent": "Quote: Sent",
       "Quote : Sent ": "Quote: Sent",
@@ -94,6 +95,10 @@ export class MappingService {
       "Quote : In Progress": "Quote: To Write",
       "Quote: Quote Due Date Reached": "Quote: Due Date Reached",
       "Quote : Quote Due Date Reached": "Quote: Due Date Reached",
+      "Quote: Archived - Not Won": "Quote: Archived - Not Won",
+      "Quote : Archived - Not Won": "Quote: Archived - Not Won",
+      "Quote: Archived - Won": "Quote: Won",
+      "Quote : Archived - Won": "Quote: Won",
     };
 
     return statusMapping[cleanStatus] || "Quote: Sent";
