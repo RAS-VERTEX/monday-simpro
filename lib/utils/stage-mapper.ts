@@ -1,18 +1,31 @@
-// lib/utils/stage-mapper.ts - Simplified stage mapping
+// lib/utils/stage-mapper.ts - FIXED to support Won/Lost statuses
 import { logger } from "./logger";
 
 export type SimProStage = string;
 export type MondayStage = "Discovery" | "Proposal Sent" | "Won" | "Lost";
 
 /**
- * Simplified stage mapping - only what we actually need
- * Default: Everything goes to "Discovery"
- * Exception: "Quote: Sent" → "Proposal Sent"
+ * ✅ FIXED: Complete stage mapping including Won/Lost statuses
  */
 export function mapSimProToMondayStage(simproStage: string): MondayStage {
   const normalizedStage = simproStage.toLowerCase().trim();
 
-  // The only mapping we care about
+  // ✅ CRITICAL: Won status mapping
+  if (normalizedStage.includes("won")) {
+    logger.debug(`[Stage Mapper] "${simproStage}" → "Won"`);
+    return "Won";
+  }
+
+  // ✅ CRITICAL: Lost/Archived status mapping
+  if (
+    normalizedStage.includes("archived") &&
+    normalizedStage.includes("not won")
+  ) {
+    logger.debug(`[Stage Mapper] "${simproStage}" → "Lost"`);
+    return "Lost";
+  }
+
+  // Sent status mapping
   if (normalizedStage.includes("sent")) {
     logger.debug(`[Stage Mapper] "${simproStage}" → "Proposal Sent"`);
     return "Proposal Sent";

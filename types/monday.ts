@@ -1,4 +1,4 @@
-// types/monday.ts - Complete Monday.com type definitions
+// types/monday.ts - FIXED with consistent status types
 
 // ============================================================================
 // CORE MONDAY API TYPES
@@ -64,8 +64,8 @@ export interface MondayContactData {
   phone?: string;
   contactType?: string;
   siteName?: string;
-  department?: string; // ✅ Added missing property
-  position?: string; // ✅ Added missing property
+  department?: string;
+  position?: string;
   simproContactId: number;
   simproCustomerId: number;
 }
@@ -84,20 +84,25 @@ export interface MondayDealData {
 }
 
 // ============================================================================
-// DEAL STAGES (Based on your actual Monday board statuses)
+// ✅ FIXED: Complete Deal Stages (Exact SimPro status strings for Monday automation)
 // ============================================================================
 
 export type MondayDealStage =
+  // Active quote statuses
   | "Quote: Sent"
-  | "Quote: Won"
   | "Quote: On Hold"
   | "Quote: To Be Scheduled"
   | "Quote: To Write"
   | "Quote: To Be Assigned"
   | "Quote Visit Scheduled"
   | "Quote: Due Date Reached"
-  | "Quote: Archived - Not Won"
-  | "Quote : Archived - Not Won";
+  | "Quote: In Progress"
+
+  // ✅ CRITICAL: Won/Lost statuses that trigger Monday automations
+  | "Quote: Won" // → Monday automation moves to Closed Won
+  | "Quote : Won" // → Handle SimPro space variations
+  | "Quote: Archived - Not Won" // → Monday automation moves to Closed Lost
+  | "Quote : Archived - Not Won"; // → Handle SimPro space variations
 
 // ============================================================================
 // CONFIGURATION TYPES

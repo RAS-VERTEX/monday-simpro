@@ -49,7 +49,115 @@ export class SyncService {
     this.mappingService = new MappingService();
   }
 
-  // ✅ FIXED: Enhanced webhook sync with proper status updates
+  // ✅ BATCH SYNC: For manual/cron syncing (scans all quotes)
+  async syncSimProToMonday(
+    config: SyncConfig,
+    limit?: number
+  ): Promise<SyncResult> {
+    const startTime = Date.now();
+    const errors: string[] = [];
+    const debugInfo: any = {};
+    let metrics = {
+      quotesProcessed: 0,
+      accountsCreated: 0,
+      contactsCreated: 0,
+      dealsCreated: 0,
+      relationshipsLinked: 0,
+      errors: 0,
+    };
+
+    try {
+      logger.info("[Sync Service] Starting BATCH sync", {
+        minimumValue: config.minimumQuoteValue,
+        limit,
+      });
+
+      // ✅ Get ALL valid quotes from SimProQuotes service
+      const allValidQuotes = await this.simproQuotes.getActiveHighValueQuotes(
+        config.minimumQuoteValue
+      );
+
+      if (allValidQuotes.length === 0) {
+        return {
+          success: true,
+          message: "No high-value quotes found to sync",
+          timestamp: new Date().toISOString(),
+          metrics,
+        };
+      }
+
+      logger.info(
+        `[Sync Service] Found ${allValidQuotes.length} valid quotes to process`
+      );
+
+      // Apply limit AFTER getting valid quotes
+      const quotesToProcess = limit
+        ? allValidQuotes.slice(0, limit)
+        : allValidQuotes;
+
+      logger.info(
+        `[Sync Service] Processing ${quotesToProcess.length} quotes${
+          limit ? ` (limited from ${allValidQuotes.length})` : ""
+        }`
+      );
+
+      // Process each quote
+      for (const quote of quotesToProcess) {
+        try {
+          // Map quote to Monday format
+          const mappedData = this.mappingService.mapQuoteToMonday(quote);
+
+          // Process the mapped data
+          await this.processMappedQuoteWithStatusUpdate(
+            quote.ID,
+            mappedData,
+            metrics
+          );
+
+          metrics.quotesProcessed++;
+
+          logger.info(
+            `[Sync Service] ✅ Processed quote ${quote.ID}: ${mappedData.deal.dealName}`
+          );
+        } catch (error) {
+          metrics.errors++;
+          const errorMessage = `Failed to process quote ${quote.ID}: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`;
+          errors.push(errorMessage);
+          logger.error(errorMessage, { error });
+        }
+      }
+
+      const executionTime = Date.now() - startTime;
+
+      logger.info(`[Sync Service] BATCH sync completed in ${executionTime}ms`, {
+        quotesProcessed: metrics.quotesProcessed,
+        accountsCreated: metrics.accountsCreated,
+        contactsCreated: metrics.contactsCreated,
+        dealsCreated: metrics.dealsCreated,
+        errors: metrics.errors,
+      });
+
+      return {
+        success: metrics.errors === 0,
+        message: `Batch sync completed: ${metrics.quotesProcessed} quotes processed, ${metrics.errors} errors`,
+        timestamp: new Date().toISOString(),
+        metrics,
+        errors: errors.length > 0 ? errors : undefined,
+        debugInfo: Object.keys(debugInfo).length > 0 ? debugInfo : undefined,
+      };
+    } catch (error) {
+      logger.error("[Sync Service] Critical sync error", { error });
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : "Unknown sync error",
+        timestamp: new Date().toISOString(),
+        metrics,
+        errors: [error instanceof Error ? error.message : "Critical failure"],
+      };
+    }
+  }
   async syncSingleQuote(
     quoteId: number,
     companyId: number,
