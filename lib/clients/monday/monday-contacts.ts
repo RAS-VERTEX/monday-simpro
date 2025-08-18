@@ -1,4 +1,4 @@
-// lib/clients/monday/monday-contacts.ts - FIXED: Email/phone backfill for existing contacts
+// lib/clients/monday/monday-contacts.ts - FIXED: Email/phone validation and cleaning
 import { MondayApi } from "./monday-api";
 import { MondayColumnIds } from "./monday-config";
 import { MondayContactData, MondayItem } from "@/types/monday";
@@ -44,26 +44,44 @@ export class MondayContacts {
       // Prepare column values for new contact
       const columnValues: any = {};
 
-      // Email field
+      // Email field - CLEAN AND VALIDATE
       if (contactData.email) {
-        logger.info(`[Monday Contacts] 📧 Setting email: ${contactData.email}`);
-        columnValues[this.columnIds.contacts.email] = {
-          email: contactData.email,
-          text: contactData.email,
-        };
+        const cleanEmail = contactData.email.trim().toLowerCase();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (emailRegex.test(cleanEmail)) {
+          logger.info(
+            `[Monday Contacts] 📧 Setting clean email: ${cleanEmail}`
+          );
+          columnValues[this.columnIds.contacts.email] = {
+            email: cleanEmail,
+            text: cleanEmail,
+          };
+        } else {
+          logger.warn(
+            `[Monday Contacts] ⚠️ Invalid email format, skipping: "${contactData.email}"`
+          );
+        }
       }
 
-      // Phone field
+      // Phone field - CLEAN AND VALIDATE
       if (contactData.phone) {
-        logger.info(`[Monday Contacts] 📞 Setting phone: ${contactData.phone}`);
-        const cleanPhone = contactData.phone
-          .replace(/\s+/g, "")
-          .replace(/[^\d+]/g, "");
+        const rawPhone = contactData.phone.trim();
+        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
 
-        columnValues[this.columnIds.contacts.phone] = {
-          phone: cleanPhone,
-          countryShortName: "AU",
-        };
+        if (cleanPhone.length >= 8) {
+          logger.info(
+            `[Monday Contacts] 📞 Setting clean phone: ${cleanPhone} (from "${rawPhone}")`
+          );
+          columnValues[this.columnIds.contacts.phone] = {
+            phone: cleanPhone,
+            countryShortName: "AU",
+          };
+        } else {
+          logger.warn(
+            `[Monday Contacts] ⚠️ Invalid phone format, skipping: "${contactData.phone}"`
+          );
+        }
       }
 
       // Link to account if provided
@@ -111,7 +129,7 @@ export class MondayContacts {
     }
   }
 
-  // ✅ NEW: Efficiently backfill missing email/phone for existing contacts
+  // ✅ FIXED: Efficiently backfill missing email/phone with validation
   private async updateMissingContactFields(
     contactId: string,
     boardId: string,
@@ -126,32 +144,46 @@ export class MondayContacts {
       const updates: Array<{ columnId: string; value: any; field: string }> =
         [];
 
-      // Email backfill
+      // Email backfill - CLEAN AND VALIDATE
       if (contactData.email) {
-        updates.push({
-          columnId: this.columnIds.contacts.email,
-          value: {
-            email: contactData.email,
-            text: contactData.email,
-          },
-          field: "email",
-        });
+        const cleanEmail = contactData.email.trim().toLowerCase();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (emailRegex.test(cleanEmail)) {
+          updates.push({
+            columnId: this.columnIds.contacts.email,
+            value: {
+              email: cleanEmail,
+              text: cleanEmail,
+            },
+            field: "email",
+          });
+        } else {
+          logger.warn(
+            `[Monday Contacts] ⚠️ Invalid email format for backfill, skipping: "${contactData.email}"`
+          );
+        }
       }
 
-      // Phone backfill
+      // Phone backfill - CLEAN AND VALIDATE
       if (contactData.phone) {
-        const cleanPhone = contactData.phone
-          .replace(/\s+/g, "")
-          .replace(/[^\d+]/g, "");
+        const rawPhone = contactData.phone.trim();
+        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
 
-        updates.push({
-          columnId: this.columnIds.contacts.phone,
-          value: {
-            phone: cleanPhone,
-            countryShortName: "AU",
-          },
-          field: "phone",
-        });
+        if (cleanPhone.length >= 8) {
+          updates.push({
+            columnId: this.columnIds.contacts.phone,
+            value: {
+              phone: cleanPhone,
+              countryShortName: "AU",
+            },
+            field: "phone",
+          });
+        } else {
+          logger.warn(
+            `[Monday Contacts] ⚠️ Invalid phone format for backfill, skipping: "${contactData.phone}"`
+          );
+        }
       }
 
       // Account linking backfill
@@ -245,12 +277,26 @@ export class MondayContacts {
       const simproIdStr = simproContactId.toString();
 
       do {
-        const response = await this.api.query(query, {
+        const response: {
+          data?: {
+            boards: Array<{
+              items_page: {
+                cursor: string | null;
+                items: MondayItem[];
+              };
+            }>;
+          };
+        } = await this.api.query(query, {
           boardId,
           cursor,
         });
 
-        const itemsPage = response.data?.boards?.[0]?.items_page;
+        const itemsPage:
+          | {
+              cursor: string | null;
+              items: MondayItem[];
+            }
+          | undefined = response.data?.boards?.[0]?.items_page;
         if (!itemsPage) break;
 
         // Search through items for matching SimPro ID
