@@ -1,4 +1,5 @@
-// lib/clients/monday/monday-api.ts - Enhanced with rate limiting
+// lib/clients/monday/monday-api.ts - Fixed return type issues
+
 import { MondayApiResponse } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
 
@@ -21,6 +22,7 @@ export class MondayApi {
     this.apiToken = apiToken;
   }
 
+  // ✅ FIXED: Proper return type handling
   async query<T = any>(query: string, variables?: any): Promise<T> {
     // Check if we're still rate limited
     if (this.isRateLimited && Date.now() < this.rateLimitResetTime) {
@@ -32,7 +34,7 @@ export class MondayApi {
     }
 
     try {
-      const result = await this.makeRequest(query, variables);
+      const result = await this.makeRequest<T>(query, variables);
 
       // Reset rate limit flag on success
       this.isRateLimited = false;
@@ -49,10 +51,8 @@ export class MondayApi {
     }
   }
 
-  private async makeRequest<T = any>(
-    query: string,
-    variables?: any
-  ): Promise<T> {
+  // ✅ FIXED: Explicit return type and proper null handling
+  private async makeRequest<T>(query: string, variables?: any): Promise<T> {
     logger.debug("[Monday API] Executing query", {
       query: query.substring(0, 100) + "...",
       variables,
@@ -93,6 +93,12 @@ export class MondayApi {
     }
 
     logger.debug("[Monday API] Query completed successfully");
+
+    // ✅ FIXED: Proper null checking and type assertion
+    if (data.data === undefined || data.data === null) {
+      throw new Error("Monday API returned no data");
+    }
+
     return data.data;
   }
 

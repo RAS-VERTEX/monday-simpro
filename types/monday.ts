@@ -39,6 +39,20 @@ export interface MondayDealData {
 }
 
 // ============================================================================
+// MONDAY API ITEM INTERFACE (Missing from previous update)
+// ============================================================================
+
+export interface MondayItem {
+  id: string;
+  name: string;
+  column_values?: Array<{
+    id: string;
+    text: string;
+    value?: string;
+  }>;
+}
+
+// ============================================================================
 // ✅ FIXED: Complete Deal Stages (Exact SimPro status strings for Monday automation)
 // ============================================================================
 
