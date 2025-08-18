@@ -102,6 +102,7 @@ export type MondayDealStage =
   | "Quote: Archived - Not Won"
   | "Quote : Archived - Not Won"
   | "Quote: Archived - Not Won"
+  | "Quote : Archived - Not Won"
   | "Quote : Archived - Not Won";
 
 // ============================================================================
