@@ -1,4 +1,4 @@
-// lib/monday-client.ts - FIXED with safe null checks
+// lib/monday-client.ts - BULLETPROOF with dedicated SimPro ID columns
 
 import {
   MondayBoard,
@@ -164,12 +164,82 @@ export class MondayClient {
     return data.change_multiple_column_values;
   }
 
+  // ✅ BULLETPROOF: Use dedicated SimPro ID columns for exact matching
+  async findItemBySimProId(
+    boardId: string,
+    simproId: number,
+    idField: "quote" | "customer" | "contact" = "quote"
+  ): Promise<MondayItem | null> {
+    // Map board types to their SimPro ID column IDs
+    const simproIdColumns = {
+      customer: "text_mktyvanj", // Accounts board
+      contact: "text_mkty91sr", // Contacts board
+      quote: "text_mktyqrhd", // Deals board
+    };
+
+    const targetColumnId = simproIdColumns[idField];
+    const searchValue = simproId.toString();
+
+    const query = `
+      query ($boardId: ID!) {
+        boards(ids: [$boardId]) {
+          items_page(limit: 100) {
+            items {
+              id
+              name
+              column_values {
+                id
+                text
+                value
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const data = await this.query<{
+        boards: Array<{ items_page: { items: MondayItem[] } }>;
+      }>(query, { boardId });
+
+      if (!data.boards || data.boards.length === 0) {
+        return null;
+      }
+
+      const items = data.boards[0].items_page?.items || [];
+
+      // ✅ BULLETPROOF: Search for exact SimPro ID match in specific column
+      for (const item of items) {
+        if (item.column_values && Array.isArray(item.column_values)) {
+          const simproIdColumn = item.column_values.find(
+            (col) => col.id === targetColumnId
+          );
+          if (simproIdColumn?.text === searchValue) {
+            console.log(
+              `[Monday] ✅ Found existing item by SimPro ID ${simproId}: ${item.name} (${item.id})`
+            );
+            return item;
+          }
+        }
+      }
+
+      console.log(
+        `[Monday] 🔍 No existing item found for SimPro ID ${simproId} in column ${targetColumnId}`
+      );
+      return null;
+    } catch (error) {
+      console.error(`[Monday] Error finding item by SimPro ID:`, error);
+      return null;
+    }
+  }
+
   async createAccount(
     boardId: string,
     accountData: MondayAccountData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      // ✅ FIRST: Check if account already exists
+      // ✅ BULLETPROOF: Check if account already exists using SimPro ID column
       const existing = await this.findItemBySimProId(
         boardId,
         accountData.simproCustomerId,
@@ -185,7 +255,7 @@ export class MondayClient {
         };
       }
 
-      // ✅ Create new account with proper notes for tracking
+      // ✅ Create new account with SimPro ID in dedicated column
       const columnValues: MondayColumnValues = {
         company_description: `Customer from SimPro
 Email: ${accountData.description || "Not provided"}
@@ -194,6 +264,8 @@ Address: Not provided`,
         text_mktrez5x: `SimPro Customer ID: ${accountData.simproCustomerId}
 Last Sync: ${new Date().toISOString()}
 Source: SimPro Webhook`,
+        // ✅ BULLETPROOF: Store SimPro ID in dedicated column
+        text_mktyvanj: accountData.simproCustomerId.toString(),
       };
 
       const item = await this.createItem(
@@ -223,7 +295,7 @@ Source: SimPro Webhook`,
     contactData: MondayContactData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      // ✅ FIRST: Check if contact already exists
+      // ✅ BULLETPROOF: Check if contact already exists using SimPro ID column
       const existing = await this.findItemBySimProId(
         boardId,
         contactData.simproContactId,
@@ -239,7 +311,7 @@ Source: SimPro Webhook`,
         };
       }
 
-      // ✅ Create new contact with proper columns and notes
+      // ✅ Create new contact with SimPro ID in dedicated column
       const columnValues: MondayColumnValues = {};
 
       // Email column
@@ -266,6 +338,9 @@ Contact Type: ${contactData.contactType || "customer"}
 Department: ${contactData.department || "Not specified"}
 Position: ${contactData.position || "Not specified"}
 Last Sync: ${new Date().toISOString()}`;
+
+      // ✅ BULLETPROOF: Store SimPro ID in dedicated column
+      columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
 
       const item = await this.createItem(
         boardId,
@@ -294,7 +369,7 @@ Last Sync: ${new Date().toISOString()}`;
     dealData: MondayDealData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      // ✅ FIRST: Check if deal already exists
+      // ✅ BULLETPROOF: Check if deal already exists using SimPro ID column
       const existing = await this.findItemBySimProId(
         boardId,
         dealData.simproQuoteId,
@@ -310,7 +385,7 @@ Last Sync: ${new Date().toISOString()}`;
         };
       }
 
-      // ✅ Create new deal with proper columns
+      // ✅ Create new deal with SimPro ID in dedicated column
       const columnValues: MondayColumnValues = {};
 
       // Deal value
@@ -346,6 +421,9 @@ Customer: ${dealData.accountName}
 Salesperson: ${dealData.salesperson || "Not specified"}
 Site: ${dealData.siteName || "Not specified"}
 Last Sync: ${new Date().toISOString()}`;
+
+      // ✅ BULLETPROOF: Store SimPro ID in dedicated column
+      columnValues["text_mktyqrhd"] = dealData.simproQuoteId.toString();
 
       const item = await this.createItem(
         boardId,
@@ -387,68 +465,6 @@ Last Sync: ${new Date().toISOString()}`;
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
       };
-    }
-  }
-
-  // ✅ FIXED: Updated GraphQL query for Monday API v2024-04
-  async findItemBySimProId(
-    boardId: string,
-    simproId: number,
-    idField: "quote" | "customer" | "contact" = "quote"
-  ): Promise<MondayItem | null> {
-    const searchTerm = `SimPro ${
-      idField === "quote"
-        ? "Quote"
-        : idField === "customer"
-        ? "Customer"
-        : "Contact"
-    } ID: ${simproId}`;
-
-    const query = `
-      query ($boardId: ID!) {
-        boards(ids: [$boardId]) {
-          items_page(limit: 50) {
-            items {
-              id
-              name
-              column_values {
-                id
-                text
-                value
-              }
-            }
-          }
-        }
-      }
-    `;
-
-    try {
-      const data = await this.query<{
-        boards: Array<{ items_page: { items: MondayItem[] } }>;
-      }>(query, { boardId });
-
-      if (!data.boards || data.boards.length === 0) {
-        return null;
-      }
-
-      const items = data.boards[0].items_page?.items || [];
-
-      for (const item of items) {
-        // ✅ SAFE NULL CHECK: Check if column_values exists before iterating
-        if (item.column_values && Array.isArray(item.column_values)) {
-          for (const columnValue of item.column_values) {
-            // ✅ SAFE NULL CHECK: Check if columnValue and text exist
-            if (columnValue?.text && columnValue.text.includes(searchTerm)) {
-              return item;
-            }
-          }
-        }
-      }
-
-      return null;
-    } catch (error) {
-      console.error(`[Monday] Error finding item by SimPro ID:`, error);
-      return null;
     }
   }
 }
