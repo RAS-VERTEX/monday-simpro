@@ -1,4 +1,4 @@
-// lib/services/sync-service.ts - FIXED to fetch contact details for single quotes
+// lib/services/sync-service.ts - COMPLETE VERSION with getSimProQuoteDetails method
 
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
@@ -52,6 +52,13 @@ export class SyncService {
   // ✅ NEW: Public getter for mondayApi (fixes private access error)
   public get mondayClient(): MondayClient {
     return this.mondayApi;
+  }
+
+  /**
+   * ✅ NEW: Get quote details from SimPro (public method for webhook service)
+   */
+  public async getSimProQuoteDetails(companyId: number, quoteId: number) {
+    return await this.simproQuotes.getQuoteDetails(companyId, quoteId);
   }
 
   // ✅ NEW: Missing findDealBySimProId method
@@ -153,7 +160,7 @@ export class SyncService {
         };
       }
 
-      // Check valid status
+      // Check valid status - ✅ UPDATED: Include archived statuses
       const validStatuses = [
         "Quote: To Be Assigned",
         "Quote: To Be Scheduled",
@@ -172,6 +179,7 @@ export class SyncService {
         "Quote : Sent ",
         "Quote: Quote Due Date Reached",
         "Quote : Quote Due Date Reached",
+        // ✅ ADD ARCHIVED STATUSES:
         "Quote: Archived - Not Won",
         "Quote : Archived - Not Won",
         "Quote: Archived - Won",
@@ -185,8 +193,9 @@ export class SyncService {
         };
       }
 
-      // Check if not closed
-      if (basicQuote.IsClosed === true) {
+      // Check if not closed (skip for archived quotes)
+      const isArchivedQuote = statusName?.includes("Archived");
+      if (!isArchivedQuote && basicQuote.IsClosed === true) {
         return {
           success: false,
           message: `Quote ${quoteId} is closed and won't be synced`,
@@ -439,42 +448,12 @@ export class SyncService {
         `❌ [CONTACT FIX] Failed to enhance quote ${quote.ID}:`,
         error
       );
-      return [quote]; // Return original quote if enhancement fails
+      // Return original quote if enhancement fails
+      return [quote];
     }
   }
 
-  // Helper method to fetch contact details for webhooks
-  private async fetchContactDetails(
-    contactIds: number[],
-    companyId: number
-  ): Promise<Map<number, any>> {
-    const contactMap = new Map();
-
-    for (const contactId of contactIds) {
-      try {
-        const contact = (await this.simproApi.request(
-          `/companies/${companyId}/contacts/${contactId}`
-        )) as any; // ✅ Type assertion to fix TypeScript error
-
-        contactMap.set(contactId, {
-          Email: contact?.Email,
-          WorkPhone: contact?.Phone,
-          CellPhone: contact?.CellPhone,
-          Department: contact?.Department,
-          Position: contact?.Position,
-        });
-      } catch (error) {
-        console.warn(
-          `⚠️ [CONTACT FIX] Failed to fetch contact ${contactId}:`,
-          error
-        );
-      }
-    }
-
-    return contactMap;
-  }
-
-  // ✅ NEW: Reuse the SimPro customer fetching logic
+  // Fetch customer details (company information)
   private async fetchCustomerDetails(
     customerIds: number[],
     companyId: number
@@ -501,10 +480,35 @@ export class SyncService {
     return customerMap;
   }
 
-  // Process mapped quote data to Monday
-  // In lib/services/sync-service.ts
-  // Find the processMappedQuote method and update it like this:
+  // Fetch individual contact details
+  private async fetchContactDetails(
+    contactIds: number[],
+    companyId: number
+  ): Promise<Map<number, any>> {
+    const contactMap = new Map();
 
+    for (const contactId of contactIds) {
+      try {
+        const contact = (await this.simproApi.request(
+          `/companies/${companyId}/contacts/${contactId}`
+        )) as any; // ✅ Type assertion to fix TypeScript error
+
+        contactMap.set(contactId, {
+          Email: contact?.Email,
+          WorkPhone: contact?.WorkPhone,
+          CellPhone: contact?.CellPhone,
+          Department: contact?.Department,
+          Position: contact?.Position,
+        });
+      } catch (error) {
+        console.warn(`⚠️ Failed to fetch contact ${contactId}:`, error);
+      }
+    }
+
+    return contactMap;
+  }
+
+  // Process mapped quote data to Monday
   private async processMappedQuote(
     quoteId: number,
     mappedData: any,
@@ -597,7 +601,7 @@ export class SyncService {
       }
     }
 
-    // ✅ NEW: LINK DEAL TO ACCOUNT (this is what was missing!)
+    // ✅ NEW: LINK DEAL TO ACCOUNT (fixes mirror relationship)
     try {
       await this.linkDealToAccount(dealId, accountId);
       logger.info(
@@ -608,32 +612,6 @@ export class SyncService {
         `[Sync Service] ⚠️ Failed to link deal to account: ${linkError}`
       );
     }
-  }
-
-  // ✅ ADD THIS NEW METHOD to the sync service class:
-  private async linkDealToAccount(
-    dealId: string,
-    accountId: string
-  ): Promise<void> {
-    const mutation = `
-    mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-      change_column_value(
-        item_id: $itemId
-        board_id: $boardId
-        column_id: $columnId
-        value: $value
-      ) {
-        id
-      }
-    }
-  `;
-
-    await this.mondayApi.query(mutation, {
-      itemId: dealId,
-      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      columnId: "deal_account",
-      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
-    });
   }
 
   // Health check method
@@ -715,6 +693,32 @@ export class SyncService {
       boardId: process.env.MONDAY_DEALS_BOARD_ID!,
       columnId: "deal_contact",
       value: JSON.stringify({ item_ids: contactIdNumbers }),
+    });
+  }
+
+  // ✅ NEW: Link deal to account (fixes mirror relationship)
+  private async linkDealToAccount(
+    dealId: string,
+    accountId: string
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    await this.mondayApi.query(mutation, {
+      itemId: dealId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
+      columnId: "deal_account", // This should match your Monday column ID for deal-to-account relationship
+      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
     });
   }
 }
