@@ -1,4 +1,5 @@
-// lib/services/sync-service.ts - EFFICIENT webhook sync (no bulk scanning)
+// lib/services/sync-service.ts - FIXED to fetch contact details for single quotes
+
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
@@ -99,80 +100,39 @@ export class SyncService {
 
       logger.info(
         `[Sync Service] Processing ${quotesToProcess.length} quotes${
-          limit ? ` (limited from ${allValidQuotes.length})` : ""
+          limit ? ` (limited from ${allValidQuotes.length} available)` : ""
         }`
       );
 
-      // Process each quote using mapping service
+      // Process quotes with enhanced contact details
       for (const quote of quotesToProcess) {
         try {
-          metrics.quotesProcessed++;
-          logger.info(
-            `[Sync Service] Processing Quote #${quote.ID} - ${quote.Customer.CompanyName}`
-          );
-
-          // Use mapping service to transform data
           const mappedData = this.mappingService.mapQuoteToMonday(quote);
 
-          // Create account
-          const accountResult = await this.mondayApi.createAccount(
-            config.boardIds.accounts,
-            mappedData.account
-          );
+          // Process each mapped quote (account, contacts, deal)
+          await this.processMappedQuote(quote.ID, mappedData, metrics);
 
-          if (accountResult.success && accountResult.itemId) {
-            metrics.accountsCreated++;
-
-            // Create contacts
-            const contactIds: string[] = [];
-            for (const contactData of mappedData.contacts) {
-              const contactResult = await this.mondayApi.createContact(
-                config.boardIds.contacts,
-                contactData
-              );
-              if (contactResult.success && contactResult.itemId) {
-                contactIds.push(contactResult.itemId);
-                metrics.contactsCreated++;
-              }
-            }
-
-            // Create deal
-            const dealResult = await this.mondayApi.createDeal(
-              config.boardIds.deals,
-              mappedData.deal
-            );
-
-            if (dealResult.success && dealResult.itemId) {
-              metrics.dealsCreated++;
-              metrics.relationshipsLinked++;
-            }
-
-            logger.info(
-              `[Sync Service] ✅ Quote #${quote.ID} synced successfully`
-            );
-          } else {
-            throw new Error(`Failed to create account: ${accountResult.error}`);
-          }
+          metrics.quotesProcessed++;
         } catch (error) {
-          metrics.errors++;
-          const errorMsg = `Quote #${quote.ID}: ${
+          const errorMsg = `Failed to sync quote ${quote.ID}: ${
             error instanceof Error ? error.message : "Unknown error"
           }`;
+          logger.error(errorMsg, { error });
           errors.push(errorMsg);
-          logger.error(`[Sync Service] ❌ Error processing quote`, {
-            error: errorMsg,
-          });
+          metrics.errors++;
         }
       }
 
-      const success = metrics.errors === 0;
+      const success = errors.length === 0;
+      const message = success
+        ? `Successfully synced ${metrics.quotesProcessed} quotes${
+            limit ? ` (limited from ${allValidQuotes.length} available)` : ""
+          }`
+        : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`;
+
       return {
         success,
-        message: success
-          ? `Successfully synced ${metrics.quotesProcessed} quotes${
-              limit ? ` (limited from ${allValidQuotes.length} available)` : ""
-            }`
-          : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`,
+        message,
         timestamp: new Date().toISOString(),
         metrics,
         errors: errors.length > 0 ? errors : undefined,
@@ -190,7 +150,7 @@ export class SyncService {
     }
   }
 
-  // ✅ WEBHOOK SYNC: Efficient single quote processing (no bulk scanning)
+  // ✅ FIXED: Webhook sync with proper contact detail fetching
   async syncSingleQuote(
     quoteId: number,
     companyId: number,
@@ -201,25 +161,31 @@ export class SyncService {
         `[Sync Service] 🚀 WEBHOOK: Processing single quote ${quoteId}`
       );
 
-      // Get ONLY this specific quote (not all quotes!)
-      const quote = await this.simproQuotes.getQuoteDetails(companyId, quoteId);
+      // ✅ STEP 1: Get basic quote details
+      const basicQuote = await this.simproQuotes.getQuoteDetails(
+        companyId,
+        quoteId
+      );
 
       // Quick validation checks
-      if (!quote.Total?.ExTax || quote.Total.ExTax < config.minimumQuoteValue) {
+      if (
+        !basicQuote.Total?.ExTax ||
+        basicQuote.Total.ExTax < config.minimumQuoteValue
+      ) {
         return {
           success: false,
           message: `Quote ${quoteId} value $${
-            quote.Total?.ExTax || 0
+            basicQuote.Total?.ExTax || 0
           } doesn't meet minimum $${config.minimumQuoteValue}`,
         };
       }
 
       // Check if quote is in valid stage
       const validStages = ["Complete", "Approved"];
-      if (!validStages.includes(quote.Stage)) {
+      if (!validStages.includes(basicQuote.Stage)) {
         return {
           success: false,
-          message: `Quote ${quoteId} stage "${quote.Stage}" is not valid (need Complete/Approved)`,
+          message: `Quote ${quoteId} stage "${basicQuote.Stage}" is not valid (need Complete/Approved)`,
         };
       }
 
@@ -243,7 +209,7 @@ export class SyncService {
         "Quote: Quote Due Date Reached",
         "Quote : Quote Due Date Reached",
       ];
-      const statusName = quote.Status?.Name?.trim();
+      const statusName = basicQuote.Status?.Name?.trim();
       if (!statusName || !validStatuses.includes(statusName)) {
         return {
           success: false,
@@ -252,7 +218,7 @@ export class SyncService {
       }
 
       // Check if not closed
-      if (quote.IsClosed === true) {
+      if (basicQuote.IsClosed === true) {
         return {
           success: false,
           message: `Quote ${quoteId} is closed and won't be synced`,
@@ -263,111 +229,51 @@ export class SyncService {
         `[Sync Service] ✅ Quote ${quoteId} passes validation - syncing to Monday`
       );
 
-      // Map to Monday format
-      const mappedData = this.mappingService.mapQuoteToMonday(quote as any);
-
-      // STEP 1: Check for existing account first
-      logger.info(
-        `[Sync Service] 🏢 Processing account: ${mappedData.account.accountName}`
+      // ✅ STEP 2: CRITICAL FIX - Enhance the quote with contact details!
+      console.log(
+        `🔧 [CONTACT FIX] Enhancing quote ${quoteId} with contact details...`
       );
 
-      const existingAccount = await this.findBySimproId(
-        process.env.MONDAY_ACCOUNTS_BOARD_ID!,
-        quote.Customer.ID,
-        "customer"
+      // Use the same enhancement logic as batch processing
+      const enhancedQuotes = await this.enhanceSingleQuoteWithDetails(
+        basicQuote,
+        companyId
       );
 
-      let accountId: string;
-      if (existingAccount) {
-        accountId = existingAccount.id;
-        logger.info(
-          `[Sync Service] ✅ Using existing account: ${existingAccount.name}`
+      if (enhancedQuotes.length === 0) {
+        throw new Error(
+          `Failed to enhance quote ${quoteId} with contact details`
         );
-      } else {
-        const accountResult = await this.mondayApi.createAccount(
-          process.env.MONDAY_ACCOUNTS_BOARD_ID!,
-          mappedData.account
-        );
+      }
 
-        if (!accountResult.success || !accountResult.itemId) {
-          throw new Error(`Failed to create account: ${accountResult.error}`);
+      const enhancedQuote = enhancedQuotes[0];
+
+      console.log(
+        `✅ [CONTACT FIX] Enhanced quote ${quoteId} - Contact details:`,
+        {
+          CustomerContactDetails: enhancedQuote.CustomerContactDetails,
+          SiteContactDetails: enhancedQuote.SiteContactDetails,
         }
-        accountId = accountResult.itemId;
-        logger.info(
-          `[Sync Service] ✅ Created new account: ${mappedData.account.accountName}`
-        );
-      }
-
-      // STEP 2: Process contacts with account linking
-      const contactIds: string[] = [];
-      for (const contactData of mappedData.contacts) {
-        logger.info(
-          `[Sync Service] 👤 Processing contact: ${contactData.contactName}`
-        );
-
-        const contactResult = await this.mondayApi.createContact(
-          process.env.MONDAY_CONTACTS_BOARD_ID!,
-          contactData
-        );
-
-        if (contactResult.success && contactResult.itemId) {
-          contactIds.push(contactResult.itemId);
-
-          // ✅ LINK CONTACT TO ACCOUNT
-          try {
-            await this.linkContactToAccount(contactResult.itemId, accountId);
-            logger.info(
-              `[Sync Service] 🔗 Linked contact ${contactResult.itemId} to account ${accountId}`
-            );
-          } catch (linkError) {
-            logger.warn(
-              `[Sync Service] ⚠️ Failed to link contact to account: ${linkError}`
-            );
-          }
-        } else {
-          logger.warn(
-            `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
-          );
-          continue;
-        }
-      }
-
-      // STEP 3: Create deal with contact linking
-      logger.info(
-        `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
       );
 
-      const dealResult = await this.mondayApi.createDeal(
-        process.env.MONDAY_DEALS_BOARD_ID!,
-        mappedData.deal
-      );
+      // ✅ STEP 3: Map the ENHANCED quote to Monday format
+      const mappedData = this.mappingService.mapQuoteToMonday(enhancedQuote);
 
-      if (!dealResult.success || !dealResult.itemId) {
-        throw new Error(`Failed to create deal: ${dealResult.error}`);
-      }
+      // ✅ STEP 4: Process the mapped data
+      const metrics = {
+        quotesProcessed: 0,
+        accountsCreated: 0,
+        contactsCreated: 0,
+        dealsCreated: 0,
+        relationshipsLinked: 0,
+        errors: 0,
+      };
 
-      const dealId = dealResult.itemId;
-      logger.info(
-        `[Sync Service] ✅ Created new deal: ${mappedData.deal.dealName}`
-      );
-
-      // ✅ LINK DEAL TO CONTACTS
-      if (contactIds.length > 0) {
-        try {
-          await this.linkDealToContacts(dealId, contactIds);
-          logger.info(
-            `[Sync Service] 🔗 Linked deal ${dealId} to ${contactIds.length} contacts`
-          );
-        } catch (linkError) {
-          logger.warn(
-            `[Sync Service] ⚠️ Failed to link deal to contacts: ${linkError}`
-          );
-        }
-      }
+      await this.processMappedQuote(quoteId, mappedData, metrics);
 
       logger.info(`[Sync Service] 🎉 Quote ${quoteId} webhook sync complete!`);
       logger.info(
-        `[Sync Service] 📊 Summary: Account(${accountId}), Contacts(${contactIds.length}), Deal(${dealId})`
+        `[Sync Service] 📊 Summary: Accounts(${metrics.accountsCreated}), Contacts(${metrics.contactsCreated}), Deals(${metrics.dealsCreated})`
       );
 
       return {
@@ -385,121 +291,340 @@ export class SyncService {
     }
   }
 
-  // ✅ HELPER: Find existing items by SimPro ID to avoid duplicates
-  private async findBySimproId(
-    boardId: string,
-    simproId: number,
-    type: "customer" | "contact" | "quote"
-  ): Promise<any> {
-    try {
-      // Use the Monday client's search method
-      const result = await this.mondayApi.findItemBySimProId(
-        boardId,
-        simproId,
-        type
+  // ✅ NEW: Method to enhance a single quote with contact details (like batch processing does)
+  private async enhanceSingleQuoteWithDetails(
+    quote: any,
+    companyId: number
+  ): Promise<any[]> {
+    console.log(
+      `🔧 [CONTACT FIX] Starting contact detail enhancement for quote ${quote.ID}...`
+    );
+
+    // Collect contact IDs that need details
+    const contactIds = [
+      quote.CustomerContact?.ID,
+      quote.SiteContact?.ID,
+    ].filter((id) => Boolean(id));
+    const customerIds = [quote.Customer?.ID].filter((id) => Boolean(id));
+
+    console.log(`🔧 [CONTACT FIX] Need to fetch details for:`, {
+      customerIds,
+      contactIds,
+      customerContact: quote.CustomerContact,
+      siteContact: quote.SiteContact,
+    });
+
+    if (contactIds.length === 0) {
+      console.log(
+        `⚠️ [CONTACT FIX] No contacts found to enhance for quote ${quote.ID}`
       );
-      return result;
+      return [quote]; // Return as-is if no contacts
+    }
+
+    try {
+      // Fetch contact and customer details (reuse the existing methods)
+      const [customerDetailsMap, contactDetailsMap] = await Promise.all([
+        this.fetchCustomerDetails(customerIds, companyId),
+        this.fetchContactDetails(contactIds, companyId),
+      ]);
+
+      console.log(`🔧 [CONTACT FIX] Fetched details:`, {
+        customerDetails: Object.fromEntries(customerDetailsMap),
+        contactDetails: Object.fromEntries(contactDetailsMap),
+      });
+
+      // Create enhanced quote
+      const enhancedQuote = { ...quote };
+
+      // Add customer details
+      if (quote.Customer?.ID && customerDetailsMap.has(quote.Customer.ID)) {
+        enhancedQuote.CustomerDetails = customerDetailsMap.get(
+          quote.Customer.ID
+        );
+      }
+
+      // Add customer contact details
+      if (
+        quote.CustomerContact?.ID &&
+        contactDetailsMap.has(quote.CustomerContact.ID)
+      ) {
+        enhancedQuote.CustomerContactDetails = contactDetailsMap.get(
+          quote.CustomerContact.ID
+        );
+        console.log(
+          `✅ [CONTACT FIX] Added CustomerContactDetails:`,
+          enhancedQuote.CustomerContactDetails
+        );
+      }
+
+      // Add site contact details
+      if (
+        quote.SiteContact?.ID &&
+        contactDetailsMap.has(quote.SiteContact.ID)
+      ) {
+        enhancedQuote.SiteContactDetails = contactDetailsMap.get(
+          quote.SiteContact.ID
+        );
+        console.log(
+          `✅ [CONTACT FIX] Added SiteContactDetails:`,
+          enhancedQuote.SiteContactDetails
+        );
+      }
+
+      return [enhancedQuote];
     } catch (error) {
-      logger.error(`Error finding existing ${type}`, { error });
-      return null;
+      console.error(
+        `❌ [CONTACT FIX] Failed to enhance quote ${quote.ID}:`,
+        error
+      );
+      return [quote]; // Return original quote if enhancement fails
     }
   }
 
-  // ✅ LINKING: Connect contact to account
+  // ✅ NEW: Reuse the SimPro contact fetching logic
+  private async fetchContactDetails(
+    contactIds: number[],
+    companyId: number
+  ): Promise<Map<number, any>> {
+    const contactMap = new Map();
+
+    console.log(
+      `📞 [CONTACT FIX] Fetching contact details for IDs:`,
+      contactIds
+    );
+
+    for (const contactId of contactIds) {
+      try {
+        const contact = (await this.simproApi.request(
+          `/companies/${companyId}/contacts/${contactId}`
+        )) as any; // ✅ Type assertion to fix TypeScript error
+
+        console.log(`📞 [CONTACT FIX] Fetched contact ${contactId}:`, {
+          Email: contact?.Email,
+          WorkPhone: contact?.WorkPhone,
+          CellPhone: contact?.CellPhone,
+          Department: contact?.Department,
+          Position: contact?.Position,
+        });
+
+        contactMap.set(contactId, {
+          Email: contact?.Email,
+          WorkPhone: contact?.WorkPhone,
+          CellPhone: contact?.CellPhone,
+          Department: contact?.Department,
+          Position: contact?.Position,
+        });
+      } catch (error) {
+        console.warn(
+          `⚠️ [CONTACT FIX] Failed to fetch contact ${contactId}:`,
+          error
+        );
+      }
+    }
+
+    return contactMap;
+  }
+
+  // ✅ NEW: Reuse the SimPro customer fetching logic
+  private async fetchCustomerDetails(
+    customerIds: number[],
+    companyId: number
+  ): Promise<Map<number, any>> {
+    const customerMap = new Map();
+
+    for (const customerId of customerIds) {
+      try {
+        const customer = (await this.simproApi.request(
+          `/companies/${companyId}/customers/companies/${customerId}`
+        )) as any; // ✅ Type assertion to fix TypeScript error
+
+        customerMap.set(customerId, {
+          email: customer?.Email,
+          phone: customer?.Phone,
+          altPhone: customer?.AltPhone,
+          address: customer?.Address,
+        });
+      } catch (error) {
+        console.warn(`⚠️ Failed to fetch customer ${customerId}:`, error);
+      }
+    }
+
+    return customerMap;
+  }
+
+  // Process mapped quote data to Monday
+  private async processMappedQuote(
+    quoteId: number,
+    mappedData: any,
+    metrics: any
+  ): Promise<void> {
+    // STEP 1: Create account
+    logger.info(
+      `[Sync Service] 🏢 Processing account: ${mappedData.account.accountName}`
+    );
+
+    const accountResult = await this.mondayApi.createAccount(
+      process.env.MONDAY_ACCOUNTS_BOARD_ID!,
+      mappedData.account
+    );
+
+    if (!accountResult.success || !accountResult.itemId) {
+      throw new Error(`Failed to create account: ${accountResult.error}`);
+    }
+
+    const accountId = accountResult.itemId;
+    logger.info(
+      `[Sync Service] ✅ Using existing account: ${mappedData.account.accountName}`
+    );
+
+    // STEP 2: Create contacts and link to account
+    const contactIds: string[] = [];
+    for (const contactData of mappedData.contacts) {
+      logger.info(
+        `[Sync Service] 👤 Processing contact: ${contactData.contactName}`
+      );
+
+      const contactResult = await this.mondayApi.createContact(
+        process.env.MONDAY_CONTACTS_BOARD_ID!,
+        contactData
+      );
+
+      if (contactResult.success && contactResult.itemId) {
+        contactIds.push(contactResult.itemId);
+        metrics.contactsCreated++;
+
+        // Link contact to account
+        try {
+          await this.linkContactToAccount(contactResult.itemId, accountId);
+          logger.info(
+            `[Sync Service] 🔗 Linked contact ${contactResult.itemId} to account ${accountId}`
+          );
+        } catch (linkError) {
+          logger.warn(
+            `[Sync Service] ⚠️ Failed to link contact to account: ${linkError}`
+          );
+        }
+      } else {
+        logger.warn(
+          `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
+        );
+        continue;
+      }
+    }
+
+    // STEP 3: Create deal with contact linking
+    logger.info(
+      `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
+    );
+
+    const dealResult = await this.mondayApi.createDeal(
+      process.env.MONDAY_DEALS_BOARD_ID!,
+      mappedData.deal
+    );
+
+    if (!dealResult.success || !dealResult.itemId) {
+      throw new Error(`Failed to create deal: ${dealResult.error}`);
+    }
+
+    const dealId = dealResult.itemId;
+    logger.info(
+      `[Sync Service] ✅ Deal processed: ${mappedData.deal.dealName} (${dealId})`
+    );
+
+    // ✅ LINK DEAL TO CONTACTS
+    if (contactIds.length > 0) {
+      try {
+        await this.linkDealToContacts(dealId, contactIds);
+        logger.info(
+          `[Sync Service] 🔗 Linked deal ${dealId} to ${contactIds.length} contacts`
+        );
+      } catch (linkError) {
+        logger.warn(
+          `[Sync Service] ⚠️ Failed to link deal to contacts: ${linkError}`
+        );
+      }
+    }
+  }
+
+  // Health check method
+  async healthCheck(): Promise<{
+    simpro: { status: "up" | "down"; lastCheck: string; responseTime?: number };
+    monday: { status: "up" | "down"; lastCheck: string; responseTime?: number };
+  }> {
+    const startTime = Date.now();
+
+    // Test SimPro connection
+    const simproTest = await this.simproApi.testConnection();
+    const simproTime = Date.now() - startTime;
+
+    // Test Monday connection
+    const mondayStartTime = Date.now();
+    const mondayTest = await this.mondayApi.testConnection();
+    const mondayTime = Date.now() - mondayStartTime;
+
+    return {
+      simpro: {
+        status: simproTest.success ? "up" : "down",
+        lastCheck: new Date().toISOString(),
+        responseTime: simproTime,
+      },
+      monday: {
+        status: mondayTest.success ? "up" : "down",
+        lastCheck: new Date().toISOString(),
+        responseTime: mondayTime,
+      },
+    };
+  }
+
+  // Helper methods for linking
   private async linkContactToAccount(
     contactId: string,
     accountId: string
   ): Promise<void> {
     const mutation = `
       mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
           id
         }
       }
     `;
 
-    const variables = {
+    await this.mondayApi.query(mutation, {
       itemId: contactId,
       boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
-      columnId: "contact_account", // Your contact-to-account relation column
+      columnId: "contact_account",
       value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
-    };
-
-    await this.mondayApi.query(mutation, variables);
+    });
   }
 
-  // ✅ LINKING: Connect deal to contacts
   private async linkDealToContacts(
     dealId: string,
     contactIds: string[]
   ): Promise<void> {
     const mutation = `
       mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
           id
         }
       }
     `;
 
-    const variables = {
+    const contactIdNumbers = contactIds.map((id) => parseInt(id));
+    await this.mondayApi.query(mutation, {
       itemId: dealId,
       boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      columnId: "deal_contact", // Your deal-to-contact relation column
-      value: JSON.stringify({ item_ids: contactIds.map((id) => parseInt(id)) }),
-    };
-
-    await this.mondayApi.query(mutation, variables);
-  }
-
-  async healthCheck(): Promise<{
-    simpro: {
-      status: "up" | "down";
-      lastCheck: string;
-      responseTime: number | undefined;
-    };
-    monday: {
-      status: "up" | "down";
-      lastCheck: string;
-      responseTime: number | undefined;
-    };
-  }> {
-    // Test SimPro connection
-    let simproStatus: "up" | "down" = "down";
-    let simproResponseTime: number | undefined = undefined;
-
-    try {
-      const testStart = Date.now();
-      const testResult = await this.simproApi.request("/companies");
-      simproResponseTime = Date.now() - testStart;
-      simproStatus = "up";
-    } catch (error) {
-      logger.error("[Health Check] SimPro connection failed", { error });
-    }
-
-    // Test Monday connection
-    let mondayStatus: "up" | "down" = "down";
-    let mondayResponseTime: number | undefined = undefined;
-
-    try {
-      const testStart = Date.now();
-      const testResult = await this.mondayApi.testConnection();
-      mondayResponseTime = Date.now() - testStart;
-      mondayStatus = testResult.success ? "up" : "down";
-    } catch (error) {
-      logger.error("[Health Check] Monday connection failed", { error });
-    }
-
-    return {
-      simpro: {
-        status: simproStatus,
-        lastCheck: new Date().toISOString(),
-        responseTime: simproResponseTime,
-      },
-      monday: {
-        status: mondayStatus,
-        lastCheck: new Date().toISOString(),
-        responseTime: mondayResponseTime,
-      },
-    };
+      columnId: "deal_contact",
+      value: JSON.stringify({ item_ids: contactIdNumbers }),
+    });
   }
 }

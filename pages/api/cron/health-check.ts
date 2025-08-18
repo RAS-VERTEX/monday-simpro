@@ -1,4 +1,4 @@
-// pages/api/cron/health-check.ts - Updated to use new structure
+// pages/api/cron/health-check.ts - Fixed type alignment for responseTime
 import { NextApiRequest, NextApiResponse } from "next";
 import { SyncService } from "@/lib/services/sync-service";
 import { createSimProConfig } from "@/lib/clients/simpro/simpro-config";
@@ -37,22 +37,44 @@ export default async function handler(
   }
 
   try {
-    // Build health status object
-    const healthStatus = {
-      status: "healthy" as "healthy" | "degraded" | "unhealthy",
+    // Build health status object - Fixed responseTime to be optional with proper typing
+    const healthStatus: {
+      status: "healthy" | "degraded" | "unhealthy";
+      timestamp: string;
+      version: string;
+      architecture: string;
+      services: {
+        simpro: {
+          status: "up" | "down";
+          lastCheck: string;
+          responseTime?: number | undefined; // ✅ Made truly optional with ?
+        };
+        monday: {
+          status: "up" | "down";
+          lastCheck: string;
+          responseTime?: number | undefined; // ✅ Made truly optional with ?
+        };
+      };
+      lastSync: {
+        timestamp: string;
+        status: "success" | "failed" | "unknown";
+        quotesProcessed: number;
+      };
+    } = {
+      status: "healthy",
       timestamp: new Date().toISOString(),
       version: "2.0.0", // Updated version for new architecture
       architecture: "simplified-one-way-sync",
       services: {
         simpro: {
-          status: "down" as "up" | "down",
+          status: "down",
           lastCheck: new Date().toISOString(),
-          responseTime: undefined as number | undefined,
+          responseTime: undefined,
         },
         monday: {
-          status: "down" as "up" | "down",
+          status: "down",
           lastCheck: new Date().toISOString(),
-          responseTime: undefined as number | undefined,
+          responseTime: undefined,
         },
       },
       lastSync: {
@@ -96,6 +118,7 @@ export default async function handler(
     const serviceHealthCheck = await syncService.healthCheck();
 
     // Update health status based on service checks
+    // ✅ Direct assignment now works because types match
     healthStatus.services.simpro = serviceHealthCheck.simpro;
     healthStatus.services.monday = serviceHealthCheck.monday;
 
