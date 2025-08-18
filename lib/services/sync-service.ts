@@ -498,6 +498,9 @@ export class SyncService {
   }
 
   // Process mapped quote data to Monday
+  // In lib/services/sync-service.ts
+  // Find the processMappedQuote method and update it like this:
+
   private async processMappedQuote(
     quoteId: number,
     mappedData: any,
@@ -589,6 +592,44 @@ export class SyncService {
         );
       }
     }
+
+    // ✅ NEW: LINK DEAL TO ACCOUNT (this is what was missing!)
+    try {
+      await this.linkDealToAccount(dealId, accountId);
+      logger.info(
+        `[Sync Service] 🔗 Linked deal ${dealId} to account ${accountId}`
+      );
+    } catch (linkError) {
+      logger.warn(
+        `[Sync Service] ⚠️ Failed to link deal to account: ${linkError}`
+      );
+    }
+  }
+
+  // ✅ ADD THIS NEW METHOD to the sync service class:
+  private async linkDealToAccount(
+    dealId: string,
+    accountId: string
+  ): Promise<void> {
+    const mutation = `
+    mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(
+        item_id: $itemId
+        board_id: $boardId
+        column_id: $columnId
+        value: $value
+      ) {
+        id
+      }
+    }
+  `;
+
+    await this.mondayApi.query(mutation, {
+      itemId: dealId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
+      columnId: "deal_account", // This should match your Monday column ID for deal-to-account relationship
+      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
+    });
   }
 
   // Health check method
