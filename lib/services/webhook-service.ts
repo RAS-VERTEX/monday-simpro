@@ -63,7 +63,7 @@ export class WebhookService {
       // Mark as processing
       this.processedWebhooks.set(webhookKey, now);
 
-      // Clean old entries (keep only last 5 minutes) - Fix for ES5 compatibility
+      // ✅ FIXED: Clean old entries (keep only last 5 minutes) - Fix for ES5 compatibility
       const keysToDelete: string[] = [];
       this.processedWebhooks.forEach((timestamp, key) => {
         if (now - timestamp > 300000) {
@@ -261,139 +261,6 @@ export class WebhookService {
     }
   }
 
-  // 🛡️ COMPREHENSIVE: Multiple search strategies to find existing quotes
-  private async findQuoteInMondayExtensive(
-    quoteId: number,
-    boardId: string
-  ): Promise<any | null> {
-    try {
-      logger.debug(
-        `[Webhook Service] 🔍 Comprehensive search for quote ${quoteId}`
-      );
-
-      // Strategy 1: Search by SimPro ID column (most reliable)
-      const bySimproId = await this.syncService.findDealBySimProId(
-        quoteId,
-        boardId
-      );
-      if (bySimproId) {
-        logger.debug(
-          `[Webhook Service] ✅ Found quote ${quoteId} by SimPro ID column`
-        );
-        return bySimproId;
-      }
-
-      // Strategy 2: Search by quote name pattern
-      const byName = await this.findQuoteByNamePattern(quoteId, boardId);
-      if (byName) {
-        logger.debug(
-          `[Webhook Service] ✅ Found quote ${quoteId} by name pattern`
-        );
-        return byName;
-      }
-
-      // Strategy 3: Search by notes content (backup)
-      const byNotes = await this.findQuoteByNotesContent(quoteId, boardId);
-      if (byNotes) {
-        logger.debug(
-          `[Webhook Service] ✅ Found quote ${quoteId} by notes content`
-        );
-        return byNotes;
-      }
-
-      logger.debug(`[Webhook Service] ❌ Quote ${quoteId} not found in Monday`);
-      return null;
-    } catch (error) {
-      logger.error(
-        `[Webhook Service] Error in comprehensive search for quote ${quoteId}`,
-        {
-          error,
-        }
-      );
-      return null;
-    }
-  }
-
-  private async findQuoteByNamePattern(
-    quoteId: number,
-    boardId: string
-  ): Promise<any | null> {
-    try {
-      const query = `
-        query FindQuoteByName($boardId: ID!) {
-          boards(ids: [$boardId]) {
-            items_page(limit: 100) {
-              items {
-                id
-                name
-                column_values {
-                  id
-                  text
-                }
-              }
-            }
-          }
-        }
-      `;
-
-      const result: any = await this.syncService.mondayApi.query(query, {
-        boardId,
-      });
-      const items = result.boards[0]?.items_page?.items || [];
-
-      // Look for quotes with "Quote #8923" pattern
-      const namePattern = `Quote #${quoteId}`;
-      const match = items.find((item: any) => item.name.includes(namePattern));
-
-      return match || null;
-    } catch (error) {
-      logger.error("Error searching by name pattern", { error, quoteId });
-      return null;
-    }
-  }
-
-  private async findQuoteByNotesContent(
-    quoteId: number,
-    boardId: string
-  ): Promise<any | null> {
-    try {
-      const query = `
-        query FindQuoteByNotes($boardId: ID!) {
-          boards(ids: [$boardId]) {
-            items_page(limit: 100) {
-              items {
-                id
-                name
-                column_values {
-                  id
-                  text
-                }
-              }
-            }
-          }
-        }
-      `;
-
-      const result: any = await this.syncService.mondayApi.query(query, {
-        boardId,
-      });
-      const items = result.boards[0]?.items_page?.items || [];
-
-      // Look in notes/text columns for "SimPro Quote ID: 8923"
-      const notesPattern = `SimPro Quote ID: ${quoteId}`;
-      const match = items.find((item: any) =>
-        item.column_values.some(
-          (cv: any) => cv.text && cv.text.includes(notesPattern)
-        )
-      );
-
-      return match || null;
-    } catch (error) {
-      logger.error("Error searching by notes content", { error, quoteId });
-      return null;
-    }
-  }
-
   // ✅ UPDATED: Actually delete quotes from Monday when deleted in SimPro
   private async handleQuoteDeleted(quoteId: number): Promise<{
     success: boolean;
@@ -475,7 +342,8 @@ export class WebhookService {
         }
       `;
 
-      await this.syncService.mondayApi.query(mutation, {
+      // ✅ FIXED: Use public mondayClient getter instead of private mondayApi
+      await this.syncService.mondayClient.query(mutation, {
         itemId: dealId,
       });
 
@@ -487,6 +355,143 @@ export class WebhookService {
         error,
       });
       throw error;
+    }
+  }
+
+  // 🛡️ COMPREHENSIVE: Multiple search strategies to find existing quotes
+  private async findQuoteInMondayExtensive(
+    quoteId: number,
+    boardId: string
+  ): Promise<any | null> {
+    try {
+      logger.debug(
+        `[Webhook Service] 🔍 Comprehensive search for quote ${quoteId}`
+      );
+
+      // Strategy 1: Search by SimPro ID column (most reliable)
+      const bySimproId = await this.syncService.findDealBySimProId(
+        quoteId,
+        boardId
+      );
+      if (bySimproId) {
+        logger.debug(
+          `[Webhook Service] ✅ Found quote ${quoteId} by SimPro ID column`
+        );
+        return bySimproId;
+      }
+
+      // Strategy 2: Search by quote name pattern
+      const byName = await this.findQuoteByNamePattern(quoteId, boardId);
+      if (byName) {
+        logger.debug(
+          `[Webhook Service] ✅ Found quote ${quoteId} by name pattern`
+        );
+        return byName;
+      }
+
+      // Strategy 3: Search by notes content (backup)
+      const byNotes = await this.findQuoteByNotesContent(quoteId, boardId);
+      if (byNotes) {
+        logger.debug(
+          `[Webhook Service] ✅ Found quote ${quoteId} by notes content`
+        );
+        return byNotes;
+      }
+
+      logger.debug(`[Webhook Service] ❌ Quote ${quoteId} not found in Monday`);
+      return null;
+    } catch (error) {
+      logger.error(
+        `[Webhook Service] Error in comprehensive search for quote ${quoteId}`,
+        {
+          error,
+        }
+      );
+      return null;
+    }
+  }
+
+  // ✅ FIXED: Use public mondayClient getter instead of private mondayApi
+  private async findQuoteByNamePattern(
+    quoteId: number,
+    boardId: string
+  ): Promise<any | null> {
+    try {
+      const query = `
+        query FindQuoteByName($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 100) {
+              items {
+                id
+                name
+                column_values {
+                  id
+                  text
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      // ✅ FIXED: Use public getter instead of private property
+      const result: any = await this.syncService.mondayClient.query(query, {
+        boardId,
+      });
+      const items = result.boards[0]?.items_page?.items || [];
+
+      // Look for quotes with "Quote #8923" pattern
+      const namePattern = `Quote #${quoteId}`;
+      const match = items.find((item: any) => item.name.includes(namePattern));
+
+      return match || null;
+    } catch (error) {
+      logger.error("Error searching by name pattern", { error, quoteId });
+      return null;
+    }
+  }
+
+  // ✅ FIXED: Use public mondayClient getter instead of private mondayApi
+  private async findQuoteByNotesContent(
+    quoteId: number,
+    boardId: string
+  ): Promise<any | null> {
+    try {
+      const query = `
+        query FindQuoteByNotes($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 100) {
+              items {
+                id
+                name
+                column_values {
+                  id
+                  text
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      // ✅ FIXED: Use public getter instead of private property
+      const result: any = await this.syncService.mondayClient.query(query, {
+        boardId,
+      });
+      const items = result.boards[0]?.items_page?.items || [];
+
+      // Look in notes/text columns for "SimPro Quote ID: 8923"
+      const notesPattern = `SimPro Quote ID: ${quoteId}`;
+      const match = items.find((item: any) =>
+        item.column_values.some(
+          (cv: any) => cv.text && cv.text.includes(notesPattern)
+        )
+      );
+
+      return match || null;
+    } catch (error) {
+      logger.error("Error searching by notes content", { error, quoteId });
+      return null;
     }
   }
 }

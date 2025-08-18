@@ -49,109 +49,73 @@ export class SyncService {
     this.mappingService = new MappingService();
   }
 
-  // ✅ BATCH SYNC: For manual/cron syncing (scans all quotes)
-  async syncSimProToMonday(
-    config: SyncConfig,
-    limit?: number
-  ): Promise<SyncResult> {
-    const startTime = Date.now();
-    const errors: string[] = [];
-    const debugInfo: any = {};
-    let metrics = {
-      quotesProcessed: 0,
-      accountsCreated: 0,
-      contactsCreated: 0,
-      dealsCreated: 0,
-      relationshipsLinked: 0,
-      errors: 0,
-    };
+  // ✅ NEW: Public getter for mondayApi (fixes private access error)
+  public get mondayClient(): MondayClient {
+    return this.mondayApi;
+  }
 
+  // ✅ NEW: Missing findDealBySimProId method
+  public async findDealBySimProId(
+    simproQuoteId: number,
+    boardId: string
+  ): Promise<any | null> {
     try {
-      logger.info(
-        "[Sync Service] Starting BATCH sync with direct Monday client",
-        {
-          minimumValue: config.minimumQuoteValue,
-          limit,
+      const query = `
+        query FindDeal($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 50) {
+              items {
+                id
+                name
+                column_values {
+                  id
+                  text
+                }
+              }
+            }
+          }
         }
-      );
+      `;
 
-      // Get ALL valid quotes first (only for batch sync)
-      const allValidQuotes = await this.simproQuotes.getActiveHighValueQuotes(
-        config.minimumQuoteValue
-      );
+      const result = (await this.mondayApi.query(query, { boardId })) as any; // ✅ Type assertion to fix TypeScript error
+      const items = result.boards[0]?.items_page?.items || [];
 
-      if (allValidQuotes.length === 0) {
-        return {
-          success: true,
-          message: "No high-value quotes found to sync",
-          timestamp: new Date().toISOString(),
-          metrics,
-        };
-      }
+      // Search for deal by SimPro Quote ID in notes
+      for (const item of items) {
+        const notesColumn = item.column_values.find(
+          (cv: any) =>
+            cv.text && cv.text.includes(`SimPro Quote ID: ${simproQuoteId}`)
+        );
 
-      logger.info(
-        `[Sync Service] Found ${allValidQuotes.length} valid quotes to process`
-      );
+        if (notesColumn) {
+          logger.info(
+            `[Sync Service] Found deal by SimPro ID: ${item.name} (${item.id})`
+          );
+          return item;
+        }
 
-      // Apply limit AFTER getting valid quotes
-      const quotesToProcess = limit
-        ? allValidQuotes.slice(0, limit)
-        : allValidQuotes;
-
-      logger.info(
-        `[Sync Service] Processing ${quotesToProcess.length} quotes${
-          limit ? ` (limited from ${allValidQuotes.length} available)` : ""
-        }`
-      );
-
-      // Process quotes with enhanced contact details
-      for (const quote of quotesToProcess) {
-        try {
-          const mappedData = this.mappingService.mapQuoteToMonday(quote);
-
-          // Process each mapped quote (account, contacts, deal)
-          await this.processMappedQuote(quote.ID, mappedData, metrics);
-
-          metrics.quotesProcessed++;
-        } catch (error) {
-          const errorMsg = `Failed to sync quote ${quote.ID}: ${
-            error instanceof Error ? error.message : "Unknown error"
-          }`;
-          logger.error(errorMsg, { error });
-          errors.push(errorMsg);
-          metrics.errors++;
+        // Also check deal name for quote ID pattern
+        if (item.name.includes(`Quote #${simproQuoteId}`)) {
+          logger.info(
+            `[Sync Service] Found deal by name pattern: ${item.name} (${item.id})`
+          );
+          return item;
         }
       }
 
-      const success = errors.length === 0;
-      const message = success
-        ? `Successfully synced ${metrics.quotesProcessed} quotes${
-            limit ? ` (limited from ${allValidQuotes.length} available)` : ""
-          }`
-        : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`;
-
-      return {
-        success,
-        message,
-        timestamp: new Date().toISOString(),
-        metrics,
-        errors: errors.length > 0 ? errors : undefined,
-        debugInfo: Object.keys(debugInfo).length > 0 ? debugInfo : undefined,
-      };
+      return null;
     } catch (error) {
-      logger.error("[Sync Service] Critical sync error", { error });
-      return {
-        success: false,
-        message: error instanceof Error ? error.message : "Unknown sync error",
-        timestamp: new Date().toISOString(),
-        metrics,
-        errors: [error instanceof Error ? error.message : "Critical failure"],
-      };
+      logger.error("[Sync Service] Error finding deal by SimPro ID", {
+        error,
+        simproQuoteId,
+        boardId,
+      });
+      return null;
     }
   }
 
-  // ✅ FIXED: Webhook sync with proper contact detail fetching
-  async syncSingleQuote(
+  // ✅ NEW: Missing syncSingleQuote method
+  public async syncSingleQuote(
     quoteId: number,
     companyId: number,
     config: { minimumQuoteValue: number }
@@ -161,7 +125,7 @@ export class SyncService {
         `[Sync Service] 🚀 WEBHOOK: Processing single quote ${quoteId}`
       );
 
-      // ✅ STEP 1: Get basic quote details
+      // ✅ STEP 1: Get basic quote details using existing method
       const basicQuote = await this.simproQuotes.getQuoteDetails(
         companyId,
         quoteId
@@ -291,6 +255,107 @@ export class SyncService {
     }
   }
 
+  // ✅ BATCH SYNC: For manual/cron syncing (scans all quotes)
+  async syncSimProToMonday(
+    config: SyncConfig,
+    limit?: number
+  ): Promise<SyncResult> {
+    const startTime = Date.now();
+    const errors: string[] = [];
+    const debugInfo: any = {};
+    let metrics = {
+      quotesProcessed: 0,
+      accountsCreated: 0,
+      contactsCreated: 0,
+      dealsCreated: 0,
+      relationshipsLinked: 0,
+      errors: 0,
+    };
+
+    try {
+      logger.info(
+        "[Sync Service] Starting BATCH sync with direct Monday client",
+        {
+          minimumValue: config.minimumQuoteValue,
+          limit,
+        }
+      );
+
+      // Get ALL valid quotes first (only for batch sync)
+      const allValidQuotes = await this.simproQuotes.getActiveHighValueQuotes(
+        config.minimumQuoteValue
+      );
+
+      if (allValidQuotes.length === 0) {
+        return {
+          success: true,
+          message: "No high-value quotes found to sync",
+          timestamp: new Date().toISOString(),
+          metrics,
+        };
+      }
+
+      logger.info(
+        `[Sync Service] Found ${allValidQuotes.length} valid quotes to process`
+      );
+
+      // Apply limit AFTER getting valid quotes
+      const quotesToProcess = limit
+        ? allValidQuotes.slice(0, limit)
+        : allValidQuotes;
+
+      logger.info(
+        `[Sync Service] Processing ${quotesToProcess.length} quotes${
+          limit ? ` (limited from ${allValidQuotes.length} available)` : ""
+        }`
+      );
+
+      // Process quotes with enhanced contact details
+      for (const quote of quotesToProcess) {
+        try {
+          const mappedData = this.mappingService.mapQuoteToMonday(quote);
+
+          // Process each mapped quote (account, contacts, deal)
+          await this.processMappedQuote(quote.ID, mappedData, metrics);
+
+          metrics.quotesProcessed++;
+        } catch (error) {
+          const errorMsg = `Failed to sync quote ${quote.ID}: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`;
+          logger.error(errorMsg, { error });
+          errors.push(errorMsg);
+          metrics.errors++;
+        }
+      }
+
+      const success = errors.length === 0;
+      const message = success
+        ? `Successfully synced ${metrics.quotesProcessed} quotes${
+            limit ? ` (limited from ${allValidQuotes.length} available)` : ""
+          }`
+        : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`;
+
+      return {
+        success,
+        message,
+        timestamp: new Date().toISOString(),
+        metrics,
+        errors: errors.length > 0 ? errors : undefined,
+        debugInfo: Object.keys(debugInfo).length > 0 ? debugInfo : undefined,
+      };
+    } catch (error) {
+      logger.error("[Sync Service] Critical sync error", { error });
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : "Unknown sync error",
+        timestamp: new Date().toISOString(),
+        metrics,
+        errors: [error instanceof Error ? error.message : "Critical failure"],
+      };
+    }
+  }
+
   // ✅ NEW: Method to enhance a single quote with contact details (like batch processing does)
   private async enhanceSingleQuoteWithDetails(
     quote: any,
@@ -351,10 +416,6 @@ export class SyncService {
         enhancedQuote.CustomerContactDetails = contactDetailsMap.get(
           quote.CustomerContact.ID
         );
-        console.log(
-          `✅ [CONTACT FIX] Added CustomerContactDetails:`,
-          enhancedQuote.CustomerContactDetails
-        );
       }
 
       // Add site contact details
@@ -365,12 +426,9 @@ export class SyncService {
         enhancedQuote.SiteContactDetails = contactDetailsMap.get(
           quote.SiteContact.ID
         );
-        console.log(
-          `✅ [CONTACT FIX] Added SiteContactDetails:`,
-          enhancedQuote.SiteContactDetails
-        );
       }
 
+      console.log(`✅ [CONTACT FIX] Enhanced quote ${quote.ID} successfully`);
       return [enhancedQuote];
     } catch (error) {
       console.error(
@@ -381,17 +439,12 @@ export class SyncService {
     }
   }
 
-  // ✅ NEW: Reuse the SimPro contact fetching logic
+  // Helper method to fetch contact details for webhooks
   private async fetchContactDetails(
     contactIds: number[],
     companyId: number
   ): Promise<Map<number, any>> {
     const contactMap = new Map();
-
-    console.log(
-      `📞 [CONTACT FIX] Fetching contact details for IDs:`,
-      contactIds
-    );
 
     for (const contactId of contactIds) {
       try {
@@ -399,17 +452,9 @@ export class SyncService {
           `/companies/${companyId}/contacts/${contactId}`
         )) as any; // ✅ Type assertion to fix TypeScript error
 
-        console.log(`📞 [CONTACT FIX] Fetched contact ${contactId}:`, {
-          Email: contact?.Email,
-          WorkPhone: contact?.WorkPhone,
-          CellPhone: contact?.CellPhone,
-          Department: contact?.Department,
-          Position: contact?.Position,
-        });
-
         contactMap.set(contactId, {
           Email: contact?.Email,
-          WorkPhone: contact?.WorkPhone,
+          WorkPhone: contact?.Phone,
           CellPhone: contact?.CellPhone,
           Department: contact?.Department,
           Position: contact?.Position,
