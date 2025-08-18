@@ -1,4 +1,4 @@
-// lib/clients/simpro/simpro-api.ts - Core REST API wrapper
+// lib/clients/simpro/simpro-api.ts - FIXED with proper Bearer token
 import { logger } from "@/lib/utils/logger";
 
 export class SimProApi {
@@ -34,6 +34,7 @@ export class SimProApi {
       const response = await fetch(url, {
         ...options,
         headers: {
+          // ✅ FIXED: Ensure Bearer prefix is always included
           Authorization: `Bearer ${this.accessToken}`,
           "Content-Type": "application/json",
           Accept: "application/json",
@@ -49,7 +50,7 @@ export class SimProApi {
 
         if (response.status === 401) {
           throw new Error(
-            "SimPro authentication failed - access token may be expired"
+            "SimPro authentication failed - Bearer token may be invalid or expired"
           );
         }
         throw new Error(

@@ -1,10 +1,10 @@
-// lib/services/mapping-service.ts - FIXED with proper types
+// lib/services/mapping-service.ts - FIXED with email/phone debugging
 import { EnhancedSimProQuote } from "@/lib/clients/simpro/simpro-quotes";
 import {
   MondayDealData,
   MondayAccountData,
   MondayContactData,
-  MondayDealStage, // ✅ Use correct type
+  MondayDealStage,
 } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
 
@@ -50,7 +50,7 @@ export class MappingService {
     const deal: MondayDealData = {
       dealName,
       dealValue: quote.Total?.ExTax || 0,
-      stage: mondayStage, // ✅ Now correctly typed
+      stage: mondayStage,
       accountName: quote.Customer.CompanyName,
       salesperson: quote.Salesperson?.Name || "",
       dateIssued: quote.DateIssued || new Date().toISOString().split("T")[0],
@@ -73,12 +73,9 @@ export class MappingService {
     };
   }
 
-  // ✅ FIXED: Create proper stage mapping function
   private mapSimProToMondayStage(simproStatus: string): MondayDealStage {
-    // Clean up the status (handle extra spaces)
     const cleanStatus = simproStatus.trim();
 
-    // Map SimPro statuses to your Monday board statuses
     const statusMapping: { [key: string]: MondayDealStage } = {
       "Quote: Sent": "Quote: Sent",
       "Quote : Sent": "Quote: Sent",
@@ -93,13 +90,12 @@ export class MappingService {
       "Quote: To Be Assigned": "Quote: To Be Assigned",
       "Quote: Visit Scheduled": "Quote Visit Scheduled",
       "Quote : Visit Scheduled": "Quote Visit Scheduled",
-      "Quote: In Progress": "Quote: To Write", // Map to closest match
+      "Quote: In Progress": "Quote: To Write",
       "Quote : In Progress": "Quote: To Write",
       "Quote: Quote Due Date Reached": "Quote: Due Date Reached",
       "Quote : Quote Due Date Reached": "Quote: Due Date Reached",
     };
 
-    // Return mapped status or default to "Quote: Sent"
     return statusMapping[cleanStatus] || "Quote: Sent";
   }
 
@@ -121,9 +117,17 @@ export class MappingService {
     return parts.join("\n");
   }
 
-  // ✅ FIXED: Safe contact extraction with proper property checks
+  // ✅ FIXED: Enhanced debugging for contact extraction
   private extractContacts(quote: EnhancedSimProQuote): MondayContactData[] {
     const contacts: MondayContactData[] = [];
+
+    // 🔍 COMPREHENSIVE DEBUG LOGGING
+    console.log(`🔍 [CONTACT DEBUG] Quote ${quote.ID} - Full contact data:`, {
+      CustomerContact: quote.CustomerContact,
+      CustomerContactDetails: quote.CustomerContactDetails,
+      SiteContact: quote.SiteContact,
+      SiteContactDetails: quote.SiteContactDetails,
+    });
 
     // Customer contact - SAFE NULL CHECKS
     if (
@@ -136,19 +140,42 @@ export class MappingService {
           ? `${quote.CustomerContact.GivenName} ${quote.CustomerContact.FamilyName}`.trim()
           : quote.CustomerContact.Name || "Unknown Contact";
 
-      contacts.push({
+      const contactEmail = quote.CustomerContactDetails?.Email;
+      const contactWorkPhone = quote.CustomerContactDetails?.WorkPhone;
+      const contactCellPhone = quote.CustomerContactDetails?.CellPhone;
+      const contactPhone = contactWorkPhone || contactCellPhone;
+
+      // 🔍 DETAILED EMAIL/PHONE DEBUG
+      console.log(`📧 [CONTACT DEBUG] Customer Contact "${contactName}":`, {
+        email: contactEmail,
+        workPhone: contactWorkPhone,
+        cellPhone: contactCellPhone,
+        finalPhone: contactPhone,
+        department: quote.CustomerContactDetails?.Department,
+        position: quote.CustomerContactDetails?.Position,
+        contactId: quote.CustomerContact.ID,
+        customerId: quote.Customer.ID,
+      });
+
+      const contactData: MondayContactData = {
         contactName,
         companyName: quote.Customer.CompanyName,
         contactType: "customer",
         simproContactId: quote.CustomerContact.ID,
         simproCustomerId: quote.Customer.ID,
-        email: quote.CustomerContactDetails?.Email,
-        phone:
-          quote.CustomerContactDetails?.WorkPhone ||
-          quote.CustomerContactDetails?.CellPhone,
-        department: quote.CustomerContactDetails?.Department, // ✅ Now properly typed
-        position: quote.CustomerContactDetails?.Position, // ✅ Now properly typed
-      });
+        email: contactEmail,
+        phone: contactPhone,
+        department: quote.CustomerContactDetails?.Department,
+        position: quote.CustomerContactDetails?.Position,
+      };
+
+      // 🔍 FINAL CONTACT DATA DEBUG
+      console.log(
+        `✅ [CONTACT DEBUG] Final contact data for "${contactName}":`,
+        contactData
+      );
+
+      contacts.push(contactData);
     }
 
     // Site contact (if different from customer contact) - SAFE NULL CHECKS
@@ -157,7 +184,6 @@ export class MappingService {
       quote.SiteContact?.FamilyName ||
       quote.SiteContact?.Name
     ) {
-      // Only add if it's a different contact
       const siteContactId = quote.SiteContact.ID;
       const customerContactId = quote.CustomerContact?.ID;
 
@@ -167,26 +193,53 @@ export class MappingService {
             ? `${quote.SiteContact.GivenName} ${quote.SiteContact.FamilyName}`.trim()
             : quote.SiteContact.Name || "Unknown Site Contact";
 
-        contacts.push({
+        const contactEmail = quote.SiteContactDetails?.Email;
+        const contactWorkPhone = quote.SiteContactDetails?.WorkPhone;
+        const contactCellPhone = quote.SiteContactDetails?.CellPhone;
+        const contactPhone = contactWorkPhone || contactCellPhone;
+
+        // 🔍 SITE CONTACT DEBUG
+        console.log(`📧 [CONTACT DEBUG] Site Contact "${contactName}":`, {
+          email: contactEmail,
+          workPhone: contactWorkPhone,
+          cellPhone: contactCellPhone,
+          finalPhone: contactPhone,
+          department: quote.SiteContactDetails?.Department,
+          position: quote.SiteContactDetails?.Position,
+          contactId: quote.SiteContact.ID,
+          customerId: quote.Customer.ID,
+        });
+
+        const contactData: MondayContactData = {
           contactName,
           companyName: quote.Customer.CompanyName,
           contactType: "site",
           siteName: quote.Site?.Name || "",
           simproContactId: quote.SiteContact.ID,
           simproCustomerId: quote.Customer.ID,
-          email: quote.SiteContactDetails?.Email,
-          phone:
-            quote.SiteContactDetails?.WorkPhone ||
-            quote.SiteContactDetails?.CellPhone,
-          department: quote.SiteContactDetails?.Department, // ✅ Now properly typed
-          position: quote.SiteContactDetails?.Position, // ✅ Now properly typed
-        });
+          email: contactEmail,
+          phone: contactPhone,
+          department: quote.SiteContactDetails?.Department,
+          position: quote.SiteContactDetails?.Position,
+        };
+
+        console.log(
+          `✅ [CONTACT DEBUG] Final site contact data for "${contactName}":`,
+          contactData
+        );
+
+        contacts.push(contactData);
       }
     }
+
+    console.log(
+      `📊 [CONTACT DEBUG] Total contacts extracted for quote ${quote.ID}: ${contacts.length}`
+    );
 
     logger.debug(
       `[Mapping Service] Extracted ${contacts.length} contacts from quote ${quote.ID}`
     );
+
     return contacts;
   }
 }
