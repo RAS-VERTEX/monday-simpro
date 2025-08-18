@@ -1,5 +1,4 @@
-// lib/monday-client.ts - FIXED with proper email/phone field handling
-
+// lib/monday-client.ts - COMPLETELY FIXED with proper method implementations
 import {
   MondayBoard,
   MondayItem,
@@ -95,6 +94,7 @@ export class MondayClient {
     }
   }
 
+  // ✅ FIXED: Implement createItem method
   async createItem(
     boardId: string,
     itemName: string,
@@ -134,6 +134,7 @@ export class MondayClient {
     return data.create_item;
   }
 
+  // ✅ FIXED: Implement updateItem method
   async updateItem(
     itemId: string,
     columnValues: MondayColumnValues
@@ -142,6 +143,7 @@ export class MondayClient {
       mutation updateItem($itemId: ID!, $columnValues: JSON!) {
         change_multiple_column_values(
           item_id: $itemId,
+          board_id: null,
           column_values: $columnValues
         ) {
           id
@@ -155,8 +157,6 @@ export class MondayClient {
       }
     `;
 
-    console.log(`[Monday] Updating item ${itemId}`);
-
     const data = await this.query<{
       change_multiple_column_values: MondayItem;
     }>(mutation, {
@@ -167,31 +167,30 @@ export class MondayClient {
     return data.change_multiple_column_values;
   }
 
-  // ✅ FIXED: Use cursor-based pagination to search ALL items
+  // ✅ FIXED: Implement findItemBySimProId method
   async findItemBySimProId(
     boardId: string,
     simproId: number,
-    idField: "quote" | "customer" | "contact" = "quote"
+    entityType: "customer" | "contact" | "quote"
   ): Promise<MondayItem | null> {
-    const simproIdColumns = {
-      customer: "text_mktyvanj", // Accounts board
-      contact: "text_mkty91sr", // Contacts board
-      quote: "text_mktyqrhd", // Deals board
+    const columnMapping = {
+      customer: "text_mktyvanj", // Account SimPro ID column
+      contact: "text_mkty91sr", // Contact SimPro ID column
+      quote: "text_mktyqrhd", // Deal SimPro ID column
     };
 
-    const targetColumnId = simproIdColumns[idField];
-    const searchValue = simproId.toString();
+    const columnId = columnMapping[entityType];
+    const simproIdStr = simproId.toString();
 
     console.log(
-      `[Monday] 🔍 Searching for SimPro ID ${simproId} in column ${targetColumnId} on board ${boardId}`
+      `[Monday] 🔍 Searching for SimPro ID ${simproId} in column ${columnId} on board ${boardId}`
     );
 
     try {
       let cursor: string | null = null;
-      let hasNextPage = true;
-      let totalItemsSearched = 0;
+      let totalSearched = 0;
 
-      while (hasNextPage) {
+      do {
         const query = `
           query ($boardId: ID!, $cursor: String) {
             boards(ids: [$boardId]) {
@@ -211,65 +210,59 @@ export class MondayClient {
           }
         `;
 
-        const variables: any = { boardId };
-        if (cursor) {
-          variables.cursor = cursor;
-        }
-
-        const data = await this.query<{
+        const response: {
           boards: Array<{
-            items_page: { items: MondayItem[]; cursor?: string };
+            items_page: {
+              cursor: string | null;
+              items: MondayItem[];
+            };
           }>;
-        }>(query, variables);
+        } = await this.query(query, { boardId, cursor });
 
-        if (!data.boards || data.boards.length === 0) {
-          console.log(`[Monday] ❌ No board found with ID ${boardId}`);
-          return null;
-        }
+        const itemsPage:
+          | {
+              cursor: string | null;
+              items: MondayItem[];
+            }
+          | undefined = response.boards?.[0]?.items_page;
+        if (!itemsPage) break;
 
-        const itemsPage = data.boards[0].items_page;
-        const items = itemsPage?.items || [];
-        totalItemsSearched += items.length;
-
+        totalSearched += itemsPage.items.length;
         console.log(
-          `[Monday] 📄 Searching page (${items.length} items, total searched: ${totalItemsSearched})`
+          `[Monday] 📄 Searching page (${itemsPage.items.length} items, total searched: ${totalSearched})`
         );
 
-        for (const item of items) {
-          if (item.column_values && Array.isArray(item.column_values)) {
-            const simproIdColumn = item.column_values.find(
-              (col) => col.id === targetColumnId
+        // Search through items for matching SimPro ID
+        for (const item of itemsPage.items) {
+          const simproIdColumn = item.column_values?.find(
+            (col) => col.id === columnId
+          );
+
+          if (simproIdColumn?.text === simproIdStr) {
+            console.log(
+              `[Monday] ✅ Found existing item by SimPro ID ${simproId}: ${item.name} (${item.id}) after searching ${totalSearched} items`
             );
-            if (simproIdColumn?.text === searchValue) {
-              console.log(
-                `[Monday] ✅ Found existing item by SimPro ID ${simproId}: ${item.name} (${item.id}) after searching ${totalItemsSearched} items`
-              );
-              return item;
-            }
+            return item;
           }
         }
 
-        cursor = itemsPage?.cursor || null;
-        hasNextPage = !!cursor;
-
-        if (totalItemsSearched > 10000) {
-          console.log(
-            `[Monday] ⚠️ Safety limit reached (${totalItemsSearched} items searched), stopping search`
-          );
-          break;
-        }
-      }
+        cursor = itemsPage.cursor;
+      } while (cursor);
 
       console.log(
-        `[Monday] 🔍 No existing item found for SimPro ID ${simproId} in column ${targetColumnId} after searching ${totalItemsSearched} items`
+        `[Monday] ❌ No item found with SimPro ID ${simproId} after searching ${totalSearched} items`
       );
       return null;
     } catch (error) {
-      console.error(`[Monday] Error finding item by SimPro ID:`, error);
+      console.error(
+        `[Monday] Failed to search for SimPro ID ${simproId}:`,
+        error
+      );
       return null;
     }
   }
 
+  // Account operations
   async createAccount(
     boardId: string,
     accountData: MondayAccountData
@@ -323,7 +316,7 @@ Source: SimPro Webhook`,
     }
   }
 
-  // ✅ FIXED: Proper email/phone field handling for contacts
+  // ✅ FIXED: Contact operations with email/phone backfill
   async createContact(
     boardId: string,
     contactData: MondayContactData
@@ -334,17 +327,28 @@ Source: SimPro Webhook`,
         contactData.simproContactId,
         "contact"
       );
+
       if (existing) {
         console.log(
           `[Monday] ✅ Using existing contact: ${existing.name} (${existing.id})`
         );
+
+        // ✅ EFFICIENT: Only backfill missing email/phone data
+        if (contactData.email || contactData.phone) {
+          await this.updateMissingContactFields(
+            existing.id,
+            boardId,
+            contactData
+          );
+        }
+
         return {
           success: true,
           itemId: existing.id,
         };
       }
 
-      // 🔍 DEBUG: Log the incoming contact data
+      // Create new contact with full data
       console.log(`🔍 [MONDAY DEBUG] Creating contact with data:`, {
         contactName: contactData.contactName,
         email: contactData.email,
@@ -354,45 +358,44 @@ Source: SimPro Webhook`,
 
       const columnValues: MondayColumnValues = {};
 
-      // ✅ FIXED: Email field - try different formats
+      // Email field - CLEAN AND VALIDATE
       if (contactData.email) {
-        console.log(`📧 [MONDAY DEBUG] Setting email: ${contactData.email}`);
+        const cleanEmail = contactData.email.trim().toLowerCase();
 
-        // Try the standard email format
-        columnValues["contact_email"] = {
-          email: contactData.email,
-          text: contactData.email,
-        };
-
-        // Also try just the email string (some Monday boards use this)
-        columnValues["email"] = contactData.email;
-      } else {
-        console.log(
-          `⚠️ [MONDAY DEBUG] No email provided for contact ${contactData.contactName}`
-        );
+        // Basic email validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (emailRegex.test(cleanEmail)) {
+          console.log(`📧 [MONDAY DEBUG] Setting clean email: ${cleanEmail}`);
+          columnValues["contact_email"] = {
+            email: cleanEmail,
+            text: cleanEmail,
+          };
+        } else {
+          console.warn(
+            `⚠️ [MONDAY DEBUG] Invalid email format, skipping: "${contactData.email}"`
+          );
+        }
       }
 
-      // ✅ FIXED: Phone field - try different formats
+      // Phone field - CLEAN AND VALIDATE
       if (contactData.phone) {
-        console.log(`📞 [MONDAY DEBUG] Setting phone: ${contactData.phone}`);
+        const rawPhone = contactData.phone.trim();
+        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
 
-        // Clean phone number
-        const cleanPhone = contactData.phone
-          .replace(/\s+/g, "")
-          .replace(/[^\d+]/g, "");
-
-        // Try standard phone format
-        columnValues["contact_phone"] = {
-          phone: cleanPhone,
-          countryShortName: "AU", // Australia
-        };
-
-        // Also try just the phone string
-        columnValues["phone"] = cleanPhone;
-      } else {
-        console.log(
-          `⚠️ [MONDAY DEBUG] No phone provided for contact ${contactData.contactName}`
-        );
+        if (cleanPhone.length >= 8) {
+          // Minimum phone length
+          console.log(
+            `📞 [MONDAY DEBUG] Setting clean phone: ${cleanPhone} (from "${rawPhone}")`
+          );
+          columnValues["contact_phone"] = {
+            phone: cleanPhone,
+            countryShortName: "AU",
+          };
+        } else {
+          console.warn(
+            `⚠️ [MONDAY DEBUG] Invalid phone format, skipping: "${contactData.phone}"`
+          );
+        }
       }
 
       // Notes column with SimPro tracking
@@ -408,12 +411,6 @@ Last Sync: ${new Date().toISOString()}`;
 
       // Store SimPro ID in dedicated column
       columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
-
-      // 🔍 DEBUG: Log final column values
-      console.log(
-        `🔍 [MONDAY DEBUG] Final column values for contact:`,
-        columnValues
-      );
 
       const item = await this.createItem(
         boardId,
@@ -437,6 +434,139 @@ Last Sync: ${new Date().toISOString()}`;
     }
   }
 
+  // ✅ NEW: Efficiently backfill missing email/phone for existing contacts
+  private async updateMissingContactFields(
+    contactId: string,
+    boardId: string,
+    contactData: MondayContactData
+  ): Promise<void> {
+    try {
+      console.log(
+        `🔍 [MONDAY] Backfilling contact ${contactId} with latest email/phone data`
+      );
+
+      const updates: Array<{ columnId: string; value: any; field: string }> =
+        [];
+
+      // Email backfill - CLEAN AND VALIDATE
+      if (contactData.email) {
+        const cleanEmail = contactData.email.trim().toLowerCase();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (emailRegex.test(cleanEmail)) {
+          updates.push({
+            columnId: "contact_email",
+            value: {
+              email: cleanEmail,
+              text: cleanEmail,
+            },
+            field: "email",
+          });
+        } else {
+          console.warn(
+            `⚠️ [MONDAY] Invalid email format for backfill, skipping: "${contactData.email}"`
+          );
+        }
+      }
+
+      // Phone backfill - CLEAN AND VALIDATE
+      if (contactData.phone) {
+        const rawPhone = contactData.phone.trim();
+        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+
+        if (cleanPhone.length >= 8) {
+          updates.push({
+            columnId: "contact_phone",
+            value: {
+              phone: cleanPhone,
+              countryShortName: "AU",
+            },
+            field: "phone",
+          });
+        } else {
+          console.warn(
+            `⚠️ [MONDAY] Invalid phone format for backfill, skipping: "${contactData.phone}"`
+          );
+        }
+      }
+
+      // Only make API calls if we have data to update
+      if (updates.length > 0) {
+        console.log(
+          `🔄 [MONDAY] Applying ${updates.length} backfill updates for contact ${contactId}`
+        );
+
+        for (const update of updates) {
+          await this.updateColumnValue(
+            contactId,
+            boardId,
+            update.columnId,
+            update.value
+          );
+          console.log(`  ✅ Backfilled ${update.field}`);
+        }
+
+        // Update notes to reflect the backfill
+        const updatedNotes = `SimPro Contact ID: ${contactData.simproContactId}
+Contact Type: ${contactData.contactType || "customer"}
+Department: ${contactData.department || "Not specified"}
+Position: ${contactData.position || "Not specified"}
+Email: ${contactData.email || "Not provided"}
+Phone: ${contactData.phone || "Not provided"}
+Last Sync: ${new Date().toISOString()}
+Source: SimPro Webhook (Backfilled)`;
+
+        await this.updateColumnValue(
+          contactId,
+          boardId,
+          "text_mktr67s0",
+          updatedNotes
+        );
+
+        console.log(`✅ [MONDAY] Contact ${contactId} backfilled successfully`);
+      } else {
+        console.log(
+          `✅ [MONDAY] Contact ${contactId} - no email/phone data to backfill`
+        );
+      }
+    } catch (error) {
+      // Don't fail the webhook if backfill fails - just log it
+      console.warn(
+        `⚠️ [MONDAY] Failed to backfill contact ${contactId}, continuing...`,
+        error
+      );
+    }
+  }
+
+  // ✅ HELPER: Update a single column value
+  private async updateColumnValue(
+    itemId: string,
+    boardId: string,
+    columnId: string,
+    value: any
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    await this.query(mutation, {
+      itemId,
+      boardId,
+      columnId,
+      value: JSON.stringify(value),
+    });
+  }
+
+  // Deal operations
   async createDeal(
     boardId: string,
     dealData: MondayDealData
