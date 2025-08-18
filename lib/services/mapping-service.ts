@@ -1,4 +1,5 @@
-// lib/services/mapping-service.ts - FIXED with email/phone debugging
+// lib/services/mapping-service.ts - Updated with salesperson mapping integration
+
 import { EnhancedSimProQuote } from "@/lib/clients/simpro/simpro-quotes";
 import {
   MondayDealData,
@@ -7,6 +8,7 @@ import {
   MondayDealStage,
 } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
+import { SalespersonMappingService } from "./salesperson-mapping";
 
 export interface QuoteToMondayMapping {
   account: MondayAccountData;
@@ -32,7 +34,7 @@ export class MappingService {
     const quoteName = quote.Name || cleanDescription || "Service";
     const dealName = `Quote #${quote.ID} - ${quoteName}`;
 
-    // ✅ FIXED: Map stage using correct type
+    // Map stage using correct type
     const simproStatusName = quote.Status?.Name?.trim() || "";
     const mondayStage = this.mapSimProToMondayStage(simproStatusName);
 
@@ -46,13 +48,31 @@ export class MappingService {
     // Contacts data
     const contacts: MondayContactData[] = this.extractContacts(quote);
 
-    // Deal data
+    // ✅ NEW: Map salesperson to Monday user with safe handling
+    const simproSalesperson = quote.Salesperson?.Name || "";
+    let mondayUserId: number | null = null;
+
+    try {
+      const mappingResult =
+        SalespersonMappingService.getMondayUserMapping(simproSalesperson);
+      SalespersonMappingService.logMappingResult(mappingResult);
+      mondayUserId = mappingResult.mondayUserId;
+    } catch (error) {
+      // Catch any unexpected errors - mapping must not break sync
+      logger.warn(
+        `[Mapping Service] Salesperson mapping failed safely: ${error}`
+      );
+      mondayUserId = null;
+    }
+
+    // Deal data with optional owner assignment
     const deal: MondayDealData = {
       dealName,
       dealValue: quote.Total?.ExTax || 0,
       stage: mondayStage,
       accountName: quote.Customer.CompanyName,
-      salesperson: quote.Salesperson?.Name || "",
+      salesperson: simproSalesperson || "Not specified",
+      dealOwnerId: mondayUserId || undefined,
       dateIssued: quote.DateIssued || new Date().toISOString().split("T")[0],
       dueDate:
         quote.DueDate ||
@@ -62,8 +82,31 @@ export class MappingService {
       simproQuoteId: quote.ID,
     };
 
+    // Log the salesperson assignment result (safely)
+    try {
+      if (mondayUserId && simproSalesperson) {
+        logger.info(
+          `[Mapping Service] 👤 Will assign "${simproSalesperson}" as deal owner (User ${mondayUserId})`
+        );
+      } else if (simproSalesperson) {
+        logger.info(
+          `[Mapping Service] 👤 Salesperson "${simproSalesperson}" noted but no Monday user assignment available`
+        );
+      } else {
+        logger.debug(
+          `[Mapping Service] 👤 No salesperson on quote ${quote.ID}`
+        );
+      }
+    } catch (logError) {
+      // Even logging errors shouldn't break the sync
+    }
+
     logger.debug(
-      `[Mapping Service] Mapped quote ${quote.ID}: Account="${account.accountName}", Deal="${deal.dealName}", Stage="${mondayStage}"`
+      `[Mapping Service] Mapped quote ${quote.ID}: Account="${
+        account.accountName
+      }", Deal="${deal.dealName}", Stage="${mondayStage}", Owner="${
+        simproSalesperson || "None"
+      }"`
     );
 
     return {
@@ -77,7 +120,6 @@ export class MappingService {
     const cleanStatus = simproStatus.trim();
 
     const statusMapping: { [key: string]: MondayDealStage } = {
-      // Active quote statuses
       "Quote: Sent": "Quote: Sent",
       "Quote : Sent": "Quote: Sent",
       "Quote : Sent ": "Quote: Sent",
@@ -95,9 +137,11 @@ export class MappingService {
       "Quote : In Progress": "Quote: To Write",
       "Quote: Quote Due Date Reached": "Quote: Due Date Reached",
       "Quote : Quote Due Date Reached": "Quote: Due Date Reached",
-      "Quote: Archived - Not Won": "Quote : Archived - Not Won",
-      "Quote : Archived - Not Won": "Quote : Archived - Not Won",
-      "Quote: Archived - Won": "Quote: Won",
+
+      // ✅ UPDATED: Archived statuses
+      "Quote: Archived - Not Won": "Quote: Archived - Not Won",
+      "Quote : Archived - Not Won": "Quote: Archived - Not Won",
+      "Quote: Archived - Won": "Quote: Won", // Map archived won to regular won
       "Quote : Archived - Won": "Quote: Won",
     };
 
@@ -122,7 +166,7 @@ export class MappingService {
     return parts.join("\n");
   }
 
-  // ✅ FIXED: Enhanced debugging for contact extraction
+  // ✅ ENHANCED: Contact extraction with proper type labeling
   private extractContacts(quote: EnhancedSimProQuote): MondayContactData[] {
     const contacts: MondayContactData[] = [];
 
@@ -165,7 +209,7 @@ export class MappingService {
       const contactData: MondayContactData = {
         contactName,
         companyName: quote.Customer.CompanyName,
-        contactType: "customer",
+        contactType: "customer", // ✅ IMPORTANT: Set type for Monday dropdown
         simproContactId: quote.CustomerContact.ID,
         simproCustomerId: quote.Customer.ID,
         email: contactEmail,
@@ -218,7 +262,7 @@ export class MappingService {
         const contactData: MondayContactData = {
           contactName,
           companyName: quote.Customer.CompanyName,
-          contactType: "site",
+          contactType: "site", // ✅ IMPORTANT: Set type for Monday dropdown
           siteName: quote.Site?.Name || "",
           simproContactId: quote.SiteContact.ID,
           simproCustomerId: quote.Customer.ID,

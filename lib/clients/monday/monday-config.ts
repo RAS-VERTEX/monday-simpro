@@ -1,4 +1,5 @@
-// lib/clients/monday/monday-config.ts - FIXED with your actual column IDs
+// lib/clients/monday/monday-config.ts - Updated with correct column IDs from discovery
+
 export interface MondayBoardConfig {
   accounts: string;
   contacts: string;
@@ -18,6 +19,7 @@ export interface MondayColumnIds {
     notes: string;
     accounts_relation: string;
     deals_relation: string;
+    type: string;
   };
   deals: {
     value: string;
@@ -26,31 +28,34 @@ export interface MondayColumnIds {
     notes: string;
     contacts_relation: string;
     accounts_relation: string;
+    owner: string; // ✅ NEW: Deal owner (salesperson)
   };
 }
 
-// CORRECTED: Using your actual column IDs from the Monday boards
+// ✅ UPDATED: Using actual column IDs from your Monday boards
 export const MONDAY_COLUMN_IDS: MondayColumnIds = {
   accounts: {
-    description: "company_description", // ✅ Correct: company description
-    notes: "text_mktrez5x", // ✅ Correct: Notes field
-    contacts_relation: "account_contact", // ✅ Correct: Contacts relation
-    deals_relation: "account_deal", // ✅ Correct: Deals relation (mirror)
+    description: "company_description",
+    notes: "text_mktrez5x",
+    contacts_relation: "account_contact",
+    deals_relation: "account_deal",
   },
   contacts: {
-    email: "contact_email", // ✅ Correct: Email field
-    phone: "contact_phone", // ✅ Correct: Phone field
-    notes: "text_mktr67s0", // ✅ Correct: Notes field
-    accounts_relation: "contact_account", // ✅ Correct: Accounts relation
-    deals_relation: "contact_deal", // ✅ Correct: Deals relation
+    email: "contact_email",
+    phone: "contact_phone",
+    notes: "text_mktr67s0",
+    accounts_relation: "contact_account",
+    deals_relation: "contact_deal",
+    type: "title5",
   },
   deals: {
-    value: "deal_value", // ✅ Correct: Deal Value field
-    stage: "color_mktrw6k3", // ✅ Correct: Status field
-    close_date: "deal_expected_close_date", // ✅ Correct: Expected Close Date
-    notes: "text_mktrtr9b", // ✅ Correct: Notes field
-    contacts_relation: "deal_contact", // ✅ Correct: Contacts relation
-    accounts_relation: "deal_account", // ✅ Correct: Accounts relation (mirror)
+    value: "deal_value",
+    stage: "color_mktrw6k3",
+    close_date: "deal_expected_close_date",
+    notes: "text_mktrtr9b",
+    contacts_relation: "deal_contact",
+    accounts_relation: "deal_account",
+    owner: "deal_owner",
   },
 };
 
