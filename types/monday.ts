@@ -95,7 +95,9 @@ export type MondayDealStage =
   | "Quote: To Write"
   | "Quote: To Be Assigned"
   | "Quote Visit Scheduled"
-  | "Quote: Due Date Reached";
+  | "Quote: Due Date Reached"
+  | "Quote: Archived - Not Won"
+  | "Quote : Archived - Not Won";
 
 // ============================================================================
 // CONFIGURATION TYPES

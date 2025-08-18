@@ -1,4 +1,4 @@
-// lib/monday-client.ts - COMPLETELY FIXED with proper method implementations
+// lib/monday-client.ts - COMPLETE with updateColumnValue method
 import {
   MondayBoard,
   MondayItem,
@@ -94,7 +94,6 @@ export class MondayClient {
     }
   }
 
-  // ✅ FIXED: Implement createItem method
   async createItem(
     boardId: string,
     itemName: string,
@@ -134,7 +133,6 @@ export class MondayClient {
     return data.create_item;
   }
 
-  // ✅ FIXED: Implement updateItem method
   async updateItem(
     itemId: string,
     columnValues: MondayColumnValues
@@ -143,7 +141,6 @@ export class MondayClient {
       mutation updateItem($itemId: ID!, $columnValues: JSON!) {
         change_multiple_column_values(
           item_id: $itemId,
-          board_id: null,
           column_values: $columnValues
         ) {
           id
@@ -157,6 +154,8 @@ export class MondayClient {
       }
     `;
 
+    console.log(`[Monday] Updating item ${itemId}`);
+
     const data = await this.query<{
       change_multiple_column_values: MondayItem;
     }>(mutation, {
@@ -167,7 +166,41 @@ export class MondayClient {
     return data.change_multiple_column_values;
   }
 
-  // ✅ FIXED: Implement findItemBySimProId method
+  // ✅ CRITICAL: Add updateColumnValue method for status updates
+  async updateColumnValue(
+    itemId: string,
+    boardId: string,
+    columnId: string,
+    value: any
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    console.log(
+      `[Monday] 🔄 Updating column ${columnId} for item ${itemId} with value:`,
+      value
+    );
+
+    await this.query(mutation, {
+      itemId,
+      boardId,
+      columnId,
+      value: JSON.stringify(value),
+    });
+
+    console.log(`[Monday] ✅ Column ${columnId} updated successfully`);
+  }
+
   async findItemBySimProId(
     boardId: string,
     simproId: number,
@@ -225,6 +258,7 @@ export class MondayClient {
               items: MondayItem[];
             }
           | undefined = response.boards?.[0]?.items_page;
+
         if (!itemsPage) break;
 
         totalSearched += itemsPage.items.length;
@@ -361,9 +395,8 @@ Source: SimPro Webhook`,
       // Email field - CLEAN AND VALIDATE
       if (contactData.email) {
         const cleanEmail = contactData.email.trim().toLowerCase();
-
-        // Basic email validation
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
         if (emailRegex.test(cleanEmail)) {
           console.log(`📧 [MONDAY DEBUG] Setting clean email: ${cleanEmail}`);
           columnValues["contact_email"] = {
@@ -383,7 +416,6 @@ Source: SimPro Webhook`,
         const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
 
         if (cleanPhone.length >= 8) {
-          // Minimum phone length
           console.log(
             `📞 [MONDAY DEBUG] Setting clean phone: ${cleanPhone} (from "${rawPhone}")`
           );
@@ -434,7 +466,7 @@ Last Sync: ${new Date().toISOString()}`;
     }
   }
 
-  // ✅ NEW: Efficiently backfill missing email/phone for existing contacts
+  // ✅ EFFICIENT: Only update missing email/phone for existing contacts
   private async updateMissingContactFields(
     contactId: string,
     boardId: string,
@@ -538,35 +570,7 @@ Source: SimPro Webhook (Backfilled)`;
     }
   }
 
-  // ✅ HELPER: Update a single column value
-  private async updateColumnValue(
-    itemId: string,
-    boardId: string,
-    columnId: string,
-    value: any
-  ): Promise<void> {
-    const mutation = `
-      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: $columnId
-          value: $value
-        ) {
-          id
-        }
-      }
-    `;
-
-    await this.query(mutation, {
-      itemId,
-      boardId,
-      columnId,
-      value: JSON.stringify(value),
-    });
-  }
-
-  // Deal operations
+  // ✅ ENHANCED: Deal operations with status updates
   async createDeal(
     boardId: string,
     dealData: MondayDealData
@@ -577,35 +581,68 @@ Source: SimPro Webhook (Backfilled)`;
         dealData.simproQuoteId,
         "quote"
       );
+
       if (existing) {
         console.log(
-          `[Monday] ✅ Using existing deal: ${existing.name} (${existing.id})`
+          `[Monday] 🔄 Updating existing deal: ${existing.name} (${existing.id})`
         );
+
+        // ✅ CRITICAL: Update existing deal status for Won/Lost quotes
+        const dealStatus = dealData.stage;
+        if (
+          dealStatus === "Quote: Won" ||
+          dealStatus === "Quote: Archived - Not Won"
+        ) {
+          console.log(
+            `[Monday] 🎯 Updating deal status to "${dealStatus}" - Monday automation will move to appropriate board`
+          );
+
+          await this.updateColumnValue(existing.id, boardId, "color_mktrw6k3", {
+            label: dealStatus,
+          });
+
+          console.log(
+            `[Monday] ✅ Deal ${existing.id} status updated to "${dealStatus}"`
+          );
+        }
+
         return {
           success: true,
           itemId: existing.id,
         };
       }
 
+      // Create new deal
       const columnValues: MondayColumnValues = {};
 
       if (dealData.dealValue) {
         columnValues["deal_value"] = dealData.dealValue;
       }
 
+      // ✅ ENHANCED: Status mapping with Won/Archived support
       const statusMapping: { [key: string]: string } = {
+        // Active quote statuses
         "Quote: Sent": "Quote: Sent",
-        "Quote: Won": "Quote: Won",
         "Quote: On Hold": "Quote: On Hold",
         "Quote: To Be Scheduled": "Quote: To Be Scheduled",
         "Quote: To Write": "Quote: To Write",
         "Quote: To Be Assigned": "Quote: To Be Assigned",
         "Quote Visit Scheduled": "Quote Visit Scheduled",
         "Quote: Due Date Reached": "Quote: Due Date Reached",
+
+        // ✅ CRITICAL: Statuses that trigger Monday automations
+        "Quote: Won": "Quote: Won", // → Monday moves to Closed Won
+        "Quote : Won": "Quote: Won", // → Monday moves to Closed Won
+        "Quote: Archived - Not Won": "Quote: Archived - Not Won", // → Monday moves to Closed Lost
+        "Quote : Archived - Not Won": "Quote: Archived - Not Won", // → Monday moves to Closed Lost
       };
 
       const mondayStatus = statusMapping[dealData.stage] || "Quote: Sent";
       columnValues["color_mktrw6k3"] = { label: mondayStatus };
+
+      console.log(
+        `[Monday] 🎯 Setting deal status: "${dealData.stage}" → "${mondayStatus}"`
+      );
 
       if (dealData.closeDate) {
         columnValues["deal_expected_close_date"] = dealData.closeDate;
@@ -628,8 +665,9 @@ Last Sync: ${new Date().toISOString()}`;
       );
 
       console.log(
-        `[Monday] ✅ Created new deal: ${dealData.dealName} (${item.id})`
+        `[Monday] ✅ Created new deal: ${dealData.dealName} (${item.id}) with status "${mondayStatus}"`
       );
+
       return {
         success: true,
         itemId: item.id,
