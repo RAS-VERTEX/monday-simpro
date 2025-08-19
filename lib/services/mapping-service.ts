@@ -136,6 +136,7 @@ export class MappingService {
       SiteContactDetails: quote.SiteContactDetails,
     });
 
+    // Customer contact
     if (
       quote.CustomerContact?.GivenName ||
       quote.CustomerContact?.FamilyName ||
@@ -178,10 +179,10 @@ export class MappingService {
         `✅ [CONTACT DEBUG] Final contact data for "${contactName}":`,
         contactData
       );
-
       contacts.push(contactData);
     }
 
+    // Site contact - only if different from customer contact
     if (
       quote.SiteContact?.GivenName ||
       quote.SiteContact?.FamilyName ||
@@ -190,54 +191,84 @@ export class MappingService {
       const siteContactId = quote.SiteContact.ID;
       const customerContactId = quote.CustomerContact?.ID;
 
-      if (siteContactId !== customerContactId) {
-        const contactName =
-          quote.SiteContact.GivenName && quote.SiteContact.FamilyName
-            ? `${quote.SiteContact.GivenName} ${quote.SiteContact.FamilyName}`.trim()
-            : quote.SiteContact.Name || "Unknown Site Contact";
-
-        const contactEmail = quote.SiteContactDetails?.Email;
-        const contactWorkPhone = quote.SiteContactDetails?.WorkPhone;
-        const contactCellPhone = quote.SiteContactDetails?.CellPhone;
-        const contactPhone = contactWorkPhone || contactCellPhone;
-
-        console.log(`📧 [CONTACT DEBUG] Site Contact "${contactName}":`, {
-          email: contactEmail,
-          workPhone: contactWorkPhone,
-          cellPhone: contactCellPhone,
-          finalPhone: contactPhone,
-          department: quote.SiteContactDetails?.Department,
-          position: quote.SiteContactDetails?.Position,
-          contactId: quote.SiteContact.ID,
-          customerId: quote.Customer.ID,
-        });
-
-        const contactData: MondayContactData = {
-          contactName,
-          companyName: quote.Customer.CompanyName,
-          contactType: "site",
-          siteName: quote.Site?.Name || "",
-          simproContactId: quote.SiteContact.ID,
-          simproCustomerId: quote.Customer.ID,
-          email: contactEmail,
-          phone: contactPhone,
-          department: quote.SiteContactDetails?.Department,
-          position: quote.SiteContactDetails?.Position,
-        };
-
+      // Skip if same SimPro contact ID
+      if (siteContactId === customerContactId) {
         console.log(
-          `✅ [CONTACT DEBUG] Final site contact data for "${contactName}":`,
-          contactData
+          `🔄 [CONTACT DEBUG] Site contact ${siteContactId} is same as customer contact - skipping duplicate`
         );
-
-        contacts.push(contactData);
+        logger.debug(
+          `[Mapping Service] Skipped duplicate site contact ${siteContactId}`
+        );
+        return contacts;
       }
+
+      const siteContactName =
+        quote.SiteContact.GivenName && quote.SiteContact.FamilyName
+          ? `${quote.SiteContact.GivenName} ${quote.SiteContact.FamilyName}`.trim()
+          : quote.SiteContact.Name || "Unknown Site Contact";
+
+      const siteContactEmail = quote.SiteContactDetails?.Email;
+      const customerContactEmail = quote.CustomerContactDetails?.Email;
+
+      // SIMPLE DUPLICATE DETECTION: Same name + same email = same person
+      const customerContactName = contacts[0]?.contactName;
+      const isSamePerson =
+        siteContactName.toLowerCase().replace(/\s+/g, "") ===
+          customerContactName?.toLowerCase().replace(/\s+/g, "") &&
+        siteContactEmail?.toLowerCase() ===
+          customerContactEmail?.toLowerCase() &&
+        siteContactEmail &&
+        customerContactEmail; // Both must have emails
+
+      if (isSamePerson) {
+        console.log(
+          `🔄 [CONTACT DEBUG] Site contact "${siteContactName}" appears to be same person as customer contact - skipping duplicate`
+        );
+        logger.debug(
+          `[Mapping Service] Skipped duplicate contact: ${siteContactName} (same name + email as customer contact)`
+        );
+        return contacts;
+      }
+
+      // Different person - create separate site contact
+      const contactWorkPhone = quote.SiteContactDetails?.WorkPhone;
+      const contactCellPhone = quote.SiteContactDetails?.CellPhone;
+      const contactPhone = contactWorkPhone || contactCellPhone;
+
+      console.log(`📧 [CONTACT DEBUG] Site Contact "${siteContactName}":`, {
+        email: siteContactEmail,
+        workPhone: contactWorkPhone,
+        cellPhone: contactCellPhone,
+        finalPhone: contactPhone,
+        department: quote.SiteContactDetails?.Department,
+        position: quote.SiteContactDetails?.Position,
+        contactId: quote.SiteContact.ID,
+        customerId: quote.Customer.ID,
+      });
+
+      const contactData: MondayContactData = {
+        contactName: siteContactName,
+        companyName: quote.Customer.CompanyName,
+        contactType: "site",
+        siteName: quote.Site?.Name || "",
+        simproContactId: quote.SiteContact.ID,
+        simproCustomerId: quote.Customer.ID,
+        email: siteContactEmail,
+        phone: contactPhone,
+        department: quote.SiteContactDetails?.Department,
+        position: quote.SiteContactDetails?.Position,
+      };
+
+      console.log(
+        `✅ [CONTACT DEBUG] Final site contact data for "${siteContactName}":`,
+        contactData
+      );
+      contacts.push(contactData);
     }
 
     console.log(
       `📊 [CONTACT DEBUG] Total contacts extracted for quote ${quote.ID}: ${contacts.length}`
     );
-
     logger.debug(
       `[Mapping Service] Extracted ${contacts.length} contacts from quote ${quote.ID}`
     );

@@ -1,4 +1,3 @@
-// pages/api/cron/sync-quotes.ts - Updated to use new SyncService
 import { NextApiRequest, NextApiResponse } from "next";
 import { SyncService } from "@/lib/services/sync-service";
 import { createSimProConfig } from "@/lib/clients/simpro/simpro-config";
@@ -50,7 +49,6 @@ export default async function handler(
   }
 
   try {
-    // Validate environment variables
     const requiredEnvVars = [
       "SIMPRO_BASE_URL",
       "SIMPRO_ACCESS_TOKEN",
@@ -67,7 +65,6 @@ export default async function handler(
       }
     }
 
-    // Create configurations using new structure
     const simproConfig = createSimProConfig();
     const mondayConfig = createMondayConfig(process.env.MONDAY_API_TOKEN!, {
       accounts: process.env.MONDAY_ACCOUNTS_BOARD_ID!,
@@ -75,7 +72,6 @@ export default async function handler(
       deals: process.env.MONDAY_DEALS_BOARD_ID!,
     });
 
-    // Initialize new sync service
     const syncService = new SyncService(simproConfig, mondayConfig);
 
     logger.info("[Cron Sync] Running health check...");
@@ -91,10 +87,10 @@ export default async function handler(
 
     logger.info("[Cron Sync] Health check passed, starting sync...");
 
-    // Run sync using new service
-    const syncResult = await (syncService as any).syncSimProToMonday(
+    // UPDATED: Changed from $15,000 to $10,000 minimum value
+    const syncResult = await syncService.syncSimProToMonday(
       {
-        minimumQuoteValue: 15000,
+        minimumQuoteValue: 10000, // Changed from 15000 to 10000
         boardIds: mondayConfig.boardIds,
       },
       limit
