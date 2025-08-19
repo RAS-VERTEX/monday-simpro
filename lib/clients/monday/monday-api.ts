@@ -1,5 +1,3 @@
-// lib/clients/monday/monday-api.ts - Fixed return type issues
-
 import { MondayApiResponse } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
 

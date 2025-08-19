@@ -1,10 +1,9 @@
-// lib/services/webhook-service.ts - COMPLETE VERSION with rate limiting and lightweight updates
 import { SyncService } from "./sync-service";
 import { SimProWebhookPayload } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
 
 export class WebhookService {
-  private processedWebhooks = new Map<string, number>(); // In-memory dedup cache
+  private processedWebhooks = new Map<string, number>();
 
   constructor(private syncService: SyncService) {}
 
@@ -20,7 +19,6 @@ export class WebhookService {
         }
       );
 
-      // Only process quote events
       if (!payload.ID.startsWith("quote.")) {
         logger.debug(
           `[Webhook Service] Ignoring non-quote event: ${payload.ID}`
@@ -38,14 +36,12 @@ export class WebhookService {
         throw new Error("Missing quote ID or company ID in webhook payload");
       }
 
-      // 🛡️ CRITICAL: In-memory duplicate prevention for rapid webhooks
       const webhookKey = `${payload.ID}-${quoteId}`;
       const now = Date.now();
 
       if (this.processedWebhooks.has(webhookKey)) {
         const lastProcessed = this.processedWebhooks.get(webhookKey)!;
         if (now - lastProcessed < 30000) {
-          // 30 second window
           logger.warn(
             `[Webhook Service] 🚫 DUPLICATE WEBHOOK BLOCKED: ${
               payload.ID
@@ -60,10 +56,8 @@ export class WebhookService {
         }
       }
 
-      // Mark as processing
       this.processedWebhooks.set(webhookKey, now);
 
-      // Clean old entries (keep only last 5 minutes)
       const keysToDelete: string[] = [];
       this.processedWebhooks.forEach((timestamp, key) => {
         if (now - timestamp > 300000) {
@@ -108,7 +102,6 @@ export class WebhookService {
     }
   }
 
-  // 🛡️ BULLETPROOF: Quote creation with multiple duplicate checks
   private async handleQuoteCreatedWithDuplicateCheck(
     quoteId: number,
     companyId: number
@@ -118,7 +111,6 @@ export class WebhookService {
         `[Webhook Service] 🚀 REAL-TIME: Processing quote creation for quote ${quoteId}`
       );
 
-      // 🛡️ STEP 1: Check if quote already exists in Monday BEFORE creating
       const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
       const existingDeal = await this.findQuoteInMondayExtensive(
         quoteId,
@@ -135,7 +127,6 @@ export class WebhookService {
         };
       }
 
-      // 🛡️ STEP 2: Double-check with SimPro ID column search
       const simproIdExists = await this.syncService.findDealBySimProId(
         quoteId,
         boardId
@@ -150,7 +141,6 @@ export class WebhookService {
         };
       }
 
-      // ✅ STEP 3: Quote doesn't exist - safe to create
       logger.info(
         `[Webhook Service] ✅ Quote ${quoteId} confirmed new - proceeding with creation`
       );
@@ -159,7 +149,7 @@ export class WebhookService {
         quoteId,
         companyId,
         {
-          minimumQuoteValue: 10000, // Using default minimum value for webhooks
+          minimumQuoteValue: 10000,
         }
       );
 
@@ -189,7 +179,6 @@ export class WebhookService {
     }
   }
 
-  // 🛡️ ENHANCED: Quote update with lightweight updates and rate limiting
   private async handleQuoteUpdatedWithDuplicateCheck(
     quoteId: number,
     companyId: number
@@ -199,7 +188,6 @@ export class WebhookService {
         `[Webhook Service] 🔄 REAL-TIME: Processing quote update for quote ${quoteId}`
       );
 
-      // 🛡️ Check if quote exists first
       const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
       const existingDeal = await this.findQuoteInMondayExtensive(
         quoteId,
@@ -216,12 +204,10 @@ export class WebhookService {
         );
       }
 
-      // ✅ Quote exists - proceed with LIGHTWEIGHT update (not full sync)
       logger.info(
         `[Webhook Service] 🔄 Updating existing quote ${quoteId} ("${existingDeal.name}")`
       );
 
-      // ✅ NEW: For existing deals, only update the status (much lighter API call)
       try {
         const basicQuote = await this.syncService.getSimProQuoteDetails(
           companyId,
@@ -254,13 +240,12 @@ export class WebhookService {
           { error }
         );
 
-        // If rate limited, return success but log the issue
         if (this.isRateLimitError(error)) {
           logger.warn(
             `[Webhook Service] 🚦 Rate limited updating quote ${quoteId}, will retry later`
           );
           return {
-            success: true, // Don't fail the webhook
+            success: true,
             message: `Quote ${quoteId} update rate limited, will retry automatically`,
           };
         }
@@ -280,7 +265,6 @@ export class WebhookService {
     }
   }
 
-  // Helper method to check if status update is needed
   private isStatusUpdateNeeded(status: string): boolean {
     const importantStatuses = [
       "Quote: Won",
@@ -296,7 +280,6 @@ export class WebhookService {
     );
   }
 
-  // Check if error is rate limit related
   private isRateLimitError(error: any): boolean {
     return (
       error?.message?.includes("429") ||
@@ -305,14 +288,13 @@ export class WebhookService {
     );
   }
 
-  // Lightweight status-only update method
   private async updateDealStatusOnly(
     dealId: string,
     boardId: string,
     newStatus: string
   ): Promise<void> {
     const statusMapping: { [key: string]: string } = {
-      "Quote: Archived - Not Won": "Quote : Archived - Not Won", // Use Monday's exact format
+      "Quote: Archived - Not Won": "Quote : Archived - Not Won",
       "Quote : Archived - Not Won": "Quote : Archived - Not Won",
       "Quote: Won": "Quote: Won",
       "Quote : Won": "Quote: Won",
@@ -326,7 +308,6 @@ export class WebhookService {
       `[Webhook Service] 🎯 Updating deal ${dealId} status: "${newStatus}" → "${mondayStatus}"`
     );
 
-    // Use a simple, low-complexity update mutation
     const mutation = `
       mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
         change_column_value(
@@ -348,7 +329,6 @@ export class WebhookService {
     });
   }
 
-  // Handle quote deletion
   private async handleQuoteDeleted(
     quoteId: number
   ): Promise<{ success: boolean; message: string }> {
@@ -393,7 +373,6 @@ export class WebhookService {
     }
   }
 
-  // Delete deal item from Monday
   private async deleteDealFromMonday(dealId: string): Promise<void> {
     try {
       const mutation = `
@@ -419,7 +398,6 @@ export class WebhookService {
     }
   }
 
-  // 🛡️ COMPREHENSIVE: Multiple search strategies to find existing quotes
   private async findQuoteInMondayExtensive(
     quoteId: number,
     boardId: string
@@ -429,7 +407,6 @@ export class WebhookService {
         `[Webhook Service] 🔍 Comprehensive search for quote ${quoteId}`
       );
 
-      // Strategy 1: Search by SimPro ID column (most reliable)
       const bySimproId = await this.syncService.findDealBySimProId(
         quoteId,
         boardId
@@ -441,7 +418,6 @@ export class WebhookService {
         return bySimproId;
       }
 
-      // Strategy 2: Search by quote name pattern
       const byName = await this.findQuoteByNamePattern(quoteId, boardId);
       if (byName) {
         logger.debug(
@@ -450,7 +426,6 @@ export class WebhookService {
         return byName;
       }
 
-      // Strategy 3: Search by notes content (backup)
       const byNotes = await this.findQuoteByNotesContent(quoteId, boardId);
       if (byNotes) {
         logger.debug(
@@ -472,7 +447,6 @@ export class WebhookService {
     }
   }
 
-  // Search by quote name pattern
   private async findQuoteByNamePattern(
     quoteId: number,
     boardId: string
@@ -511,7 +485,6 @@ export class WebhookService {
     }
   }
 
-  // Search by notes content (backup method)
   private async findQuoteByNotesContent(
     quoteId: number,
     boardId: string
