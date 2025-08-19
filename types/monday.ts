@@ -1,12 +1,6 @@
-// types/monday.ts - Updated with missing properties and fixed types
-
-// ============================================================================
-// MONDAY DATA INTERFACES
-// ============================================================================
-
 export interface MondayAccountData {
   accountName: string;
-  description?: string;
+  // REMOVED: description?: string; - not useful
   simproCustomerId: number;
   industry?: string;
 }
@@ -16,7 +10,7 @@ export interface MondayContactData {
   companyName: string;
   email?: string;
   phone?: string;
-  contactType?: "customer" | "site"; // ✅ FIXED: Specific union type instead of string
+  contactType?: "customer" | "site";
   siteName?: string;
   department?: string;
   position?: string;
@@ -35,12 +29,8 @@ export interface MondayDealData {
   accountName: string;
   siteName?: string;
   simproQuoteId: number;
-  dealOwnerId?: number; // ✅ ADDED: Missing property for salesperson assignment
+  // COMMENTED OUT: dealOwnerId?: number;
 }
-
-// ============================================================================
-// MONDAY API ITEM INTERFACE (Missing from previous update)
-// ============================================================================
 
 export interface MondayItem {
   id: string;
@@ -52,12 +42,7 @@ export interface MondayItem {
   }>;
 }
 
-// ============================================================================
-// ✅ FIXED: Complete Deal Stages (Exact SimPro status strings for Monday automation)
-// ============================================================================
-
 export type MondayDealStage =
-  // Active quote statuses
   | "Quote: Sent"
   | "Quote: On Hold"
   | "Quote: To Be Scheduled"
@@ -66,16 +51,10 @@ export type MondayDealStage =
   | "Quote Visit Scheduled"
   | "Quote: Due Date Reached"
   | "Quote: In Progress"
-
-  // ✅ CRITICAL: Won/Lost statuses that trigger Monday automations
-  | "Quote: Won" // → Monday automation moves to Closed Won
-  | "Quote : Won" // → Handle SimPro space variations
-  | "Quote: Archived - Not Won" // → Monday automation moves to Closed Lost
-  | "Quote : Archived - Not Won"; // → Handle SimPro space variations
-
-// ============================================================================
-// CONFIGURATION TYPES
-// ============================================================================
+  | "Quote: Won"
+  | "Quote : Won"
+  | "Quote: Archived - Not Won"
+  | "Quote : Archived - Not Won";
 
 export interface MondayClientConfig {
   apiToken: string;
@@ -100,7 +79,7 @@ export interface MondayColumnIds {
     notes: string;
     accounts_relation: string;
     deals_relation: string;
-    type: string; // Contact type dropdown
+    type: string;
   };
   deals: {
     value: string;
@@ -109,13 +88,9 @@ export interface MondayColumnIds {
     notes: string;
     contacts_relation: string;
     accounts_relation: string;
-    owner: string; // Deal owner (salesperson)
+    owner: string;
   };
 }
-
-// ============================================================================
-// API OPERATION RESULTS
-// ============================================================================
 
 export interface MondayOperationResult {
   success: boolean;
@@ -131,10 +106,6 @@ export interface MondayHealthStatus {
   error?: string;
 }
 
-// ============================================================================
-// API RESPONSE TYPES
-// ============================================================================
-
 export interface MondayApiResponse<T> {
   data?: T;
   errors?: Array<{
@@ -145,10 +116,6 @@ export interface MondayApiResponse<T> {
     }>;
   }>;
 }
-
-// ============================================================================
-// SYNC SERVICE TYPES
-// ============================================================================
 
 export interface MondaySyncMetrics {
   accountsCreated: number;

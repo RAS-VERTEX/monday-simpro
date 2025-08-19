@@ -1,5 +1,3 @@
-// lib/monday-client.ts - Fixed TypeScript errors
-
 import { MondayApi } from "@/lib/clients/monday/monday-api";
 import { MONDAY_COLUMN_IDS } from "@/lib/clients/monday/monday-config";
 import {
@@ -23,7 +21,6 @@ export interface MondayItem {
   }>;
 }
 
-// ✅ FIXED: Type-safe contact type mapping
 interface ContactTypeMapping {
   customer: string;
   site: string;
@@ -106,12 +103,7 @@ export class MondayClient {
 
     const mutation = `
       mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: $columnId
-          value: $value
-        ) {
+        change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) {
           id
         }
       }
@@ -123,22 +115,20 @@ export class MondayClient {
       columnId,
       value: JSON.stringify(value),
     });
-
-    console.log(`[Monday] ✅ Column ${columnId} updated successfully`);
   }
 
-  private async findItemBySimProId(
+  async findItemBySimProId(
     boardId: string,
     simproId: number,
-    type: "customer" | "contact" | "quote"
+    itemType: "customer" | "contact" | "quote"
   ): Promise<MondayItem | null> {
     const columnMapping = {
-      customer: "text_mktyvanj", // Accounts SimPro ID column
-      contact: "text_mkty91sr", // Contacts SimPro ID column
-      quote: "text_mktyqrhd", // Deals SimPro ID column
+      customer: "text_mktyvanj",
+      contact: "text_mkty91sr",
+      quote: "text_mktyqrhd",
     };
 
-    const columnId = columnMapping[type];
+    const columnId = columnMapping[itemType];
     const simproIdStr = simproId.toString();
 
     console.log(
@@ -151,16 +141,17 @@ export class MondayClient {
 
       do {
         const query = `
-          query ($boardId: ID!, $cursor: String) {
+          query searchItems($boardId: ID!, $cursor: String, $limit: Int!) {
             boards(ids: [$boardId]) {
-              items_page(limit: 100, cursor: $cursor) {
+              items_page(limit: $limit, cursor: $cursor) {
                 cursor
                 items {
                   id
                   name
-                  column_values {
+                  column_values(ids: ["${columnId}"]) {
                     id
                     text
+                    value
                   }
                 }
               }
@@ -168,11 +159,13 @@ export class MondayClient {
           }
         `;
 
-        const result = (await this.api.query(query, {
+        const result: any = await this.api.query(query, {
           boardId,
           cursor,
-        })) as any;
-        const itemsPage = result.boards?.[0]?.items_page;
+          limit: 25,
+        });
+
+        const itemsPage: any = result.boards?.[0]?.items_page;
 
         if (!itemsPage) break;
 
@@ -181,7 +174,6 @@ export class MondayClient {
           `[Monday] 📄 Searching page (${itemsPage.items.length} items, total searched: ${totalSearched})`
         );
 
-        // Search through items for matching SimPro ID
         for (const item of itemsPage.items) {
           const simproIdColumn = item.column_values?.find(
             (col: { id: string; text: string; value?: string }) =>
@@ -212,7 +204,6 @@ export class MondayClient {
     }
   }
 
-  // Account operations
   async createAccount(
     boardId: string,
     accountData: MondayAccountData
@@ -234,10 +225,7 @@ export class MondayClient {
       }
 
       const columnValues: MondayColumnValues = {
-        company_description: `Customer from SimPro
-Email: ${accountData.description || "Not provided"}
-Phone: Not provided
-Address: Not provided`,
+        // REMOVED: company_description field - not useful
         text_mktrez5x: `SimPro Customer ID: ${accountData.simproCustomerId}
 Last Sync: ${new Date().toISOString()}
 Source: SimPro Webhook`,
@@ -266,7 +254,6 @@ Source: SimPro Webhook`,
     }
   }
 
-  // ✅ FIXED: Contact operations with proper typing
   async createContact(
     boardId: string,
     contactData: MondayContactData
@@ -283,7 +270,6 @@ Source: SimPro Webhook`,
           `[Monday] ✅ Using existing contact: ${existing.name} (${existing.id})`
         );
 
-        // Update contact type for existing contacts
         if (contactData.contactType) {
           try {
             await this.updateContactType(
@@ -298,7 +284,6 @@ Source: SimPro Webhook`,
           }
         }
 
-        // Backfill missing email/phone data
         if (contactData.email || contactData.phone) {
           await this.updateMissingContactFields(
             existing.id,
@@ -310,7 +295,6 @@ Source: SimPro Webhook`,
         return { success: true, itemId: existing.id };
       }
 
-      // Create new contact with full data
       console.log(`🔍 [MONDAY DEBUG] Creating contact with data:`, {
         contactName: contactData.contactName,
         email: contactData.email,
@@ -321,19 +305,18 @@ Source: SimPro Webhook`,
 
       const columnValues: MondayColumnValues = {};
 
-      // ✅ FIXED: Set contact type dropdown with proper typing
+      // FIXED: Set contact type dropdown with labels array
       if (contactData.contactType) {
         const typeMapping: ContactTypeMapping = {
           customer: "Customer Contact",
           site: "Site Contact",
         };
 
-        // Use type assertion to ensure contactType is a valid key
         const contactType = contactData.contactType as keyof ContactTypeMapping;
         const mondayTypeLabel = typeMapping[contactType] || "Customer Contact";
 
         columnValues["title5"] = {
-          label: mondayTypeLabel,
+          labels: [mondayTypeLabel], // FIXED: Array format required by Monday API
         };
 
         console.log(
@@ -341,7 +324,6 @@ Source: SimPro Webhook`,
         );
       }
 
-      // Email field - CLEAN AND VALIDATE
       if (contactData.email) {
         const cleanEmail = contactData.email.trim().toLowerCase();
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -359,7 +341,6 @@ Source: SimPro Webhook`,
         }
       }
 
-      // Phone field - CLEAN AND VALIDATE
       if (contactData.phone) {
         const rawPhone = contactData.phone.trim();
         const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
@@ -379,7 +360,6 @@ Source: SimPro Webhook`,
         }
       }
 
-      // Notes column with SimPro tracking
       columnValues["text_mktr67s0"] = `SimPro Contact ID: ${
         contactData.simproContactId
       }
@@ -391,7 +371,6 @@ Phone: ${contactData.phone || "Not provided"}
 Last Sync: ${new Date().toISOString()}
 Source: SimPro`;
 
-      // Store SimPro ID in dedicated column
       columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
 
       const item = await this.createItem(
@@ -416,7 +395,6 @@ Source: SimPro`;
     }
   }
 
-  // ✅ FIXED: Helper method to update contact type with proper typing
   private async updateContactType(
     contactId: string,
     boardId: string,
@@ -430,8 +408,9 @@ Source: SimPro`;
 
       const mondayTypeLabel = typeMapping[contactType];
 
+      // FIXED: Use labels array for dropdown update
       await this.updateColumnValue(contactId, boardId, "title5", {
-        label: mondayTypeLabel,
+        labels: [mondayTypeLabel],
       });
 
       console.log(
@@ -456,7 +435,6 @@ Source: SimPro`;
       const updates: Array<{ columnId: string; value: any; field: string }> =
         [];
 
-      // Email backfill - CLEAN AND VALIDATE
       if (contactData.email) {
         const cleanEmail = contactData.email.trim().toLowerCase();
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -477,7 +455,6 @@ Source: SimPro`;
         }
       }
 
-      // Phone backfill - CLEAN AND VALIDATE
       if (contactData.phone) {
         const rawPhone = contactData.phone.trim();
         const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
@@ -498,7 +475,6 @@ Source: SimPro`;
         }
       }
 
-      // Only make API calls if we have data to update
       if (updates.length > 0) {
         console.log(
           `🔄 [MONDAY] Applying ${updates.length} backfill updates for contact ${contactId}`
@@ -514,7 +490,6 @@ Source: SimPro`;
           console.log(`  ✅ Backfilled ${update.field}`);
         }
 
-        // Update notes to reflect the backfill
         const updatedNotes = `SimPro Contact ID: ${contactData.simproContactId}
 Contact Type: ${contactData.contactType || "customer"}
 Department: ${contactData.department || "Not specified"}
@@ -538,7 +513,6 @@ Source: SimPro Webhook (Backfilled)`;
         );
       }
     } catch (error) {
-      // Don't fail the webhook if backfill fails - just log it
       console.warn(
         `⚠️ [MONDAY] Failed to backfill contact ${contactId}, continuing...`,
         error
@@ -546,7 +520,6 @@ Source: SimPro Webhook (Backfilled)`;
     }
   }
 
-  // ✅ UPDATED: Deal operations with owner assignment (dealOwnerId is now in the interface)
   async createDeal(
     boardId: string,
     dealData: MondayDealData
@@ -563,24 +536,18 @@ Source: SimPro Webhook (Backfilled)`;
           `[Monday] 🔄 Updating existing deal: ${existing.name} (${existing.id})`
         );
 
-        // Try to update owner for existing deals
-        if (dealData.dealOwnerId) {
-          try {
-            await this.updateColumnValue(existing.id, boardId, "deal_owner", {
-              personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
-            });
+        // COMMENTED OUT: Try to update owner for existing deals
+        // if (dealData.dealOwnerId) {
+        //   try {
+        //     await this.updateColumnValue(existing.id, boardId, "deal_owner", {
+        //       personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
+        //     });
+        //     console.log(`[Monday] ✅ Updated deal owner to "${dealData.salesperson}" (User ${dealData.dealOwnerId})`);
+        //   } catch (ownerError) {
+        //     console.warn(`[Monday] ⚠️ Could not assign owner "${dealData.salesperson}" - continuing: ${ownerError}`);
+        //   }
+        // }
 
-            console.log(
-              `[Monday] ✅ Updated deal owner to "${dealData.salesperson}" (User ${dealData.dealOwnerId})`
-            );
-          } catch (ownerError) {
-            console.warn(
-              `[Monday] ⚠️ Could not assign owner "${dealData.salesperson}" - continuing: ${ownerError}`
-            );
-          }
-        }
-
-        // Update deal status for Won/Lost quotes
         const dealStatus = dealData.stage;
         if (
           dealStatus === "Quote: Won" ||
@@ -606,32 +573,25 @@ Source: SimPro Webhook (Backfilled)`;
         };
       }
 
-      // Create new deal
       const columnValues: MondayColumnValues = {};
 
       if (dealData.dealValue) {
         columnValues["deal_value"] = dealData.dealValue;
       }
 
-      // Try to assign deal owner
-      if (dealData.dealOwnerId) {
-        try {
-          columnValues["deal_owner"] = {
-            personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
-          };
+      // COMMENTED OUT: Deal owner assignment
+      // if (dealData.dealOwnerId) {
+      //   try {
+      //     columnValues["deal_owner"] = {
+      //       personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
+      //     };
+      //     console.log(`[Monday] 👤 Will assign owner: "${dealData.salesperson}" (User ${dealData.dealOwnerId})`);
+      //   } catch (ownerError) {
+      //     console.warn(`[Monday] ⚠️ Could not prepare owner assignment for "${dealData.salesperson}" - continuing without: ${ownerError}`);
+      //     delete columnValues["deal_owner"];
+      //   }
+      // }
 
-          console.log(
-            `[Monday] 👤 Will assign owner: "${dealData.salesperson}" (User ${dealData.dealOwnerId})`
-          );
-        } catch (ownerError) {
-          console.warn(
-            `[Monday] ⚠️ Could not prepare owner assignment for "${dealData.salesperson}" - continuing without: ${ownerError}`
-          );
-          delete columnValues["deal_owner"];
-        }
-      }
-
-      // Enhanced status mapping with Won/Archived support
       const statusMapping: { [key: string]: string } = {
         "Quote: Sent": "Quote: Sent",
         "Quote: On Hold": "Quote: On Hold",
@@ -642,7 +602,7 @@ Source: SimPro Webhook (Backfilled)`;
         "Quote: Due Date Reached": "Quote: Due Date Reached",
         "Quote: Won": "Quote: Won",
         "Quote : Won": "Quote: Won",
-        "Quote: Archived - Not Won": "Quote : Archived - Not Won", // Use Monday's exact format
+        "Quote: Archived - Not Won": "Quote : Archived - Not Won",
         "Quote : Archived - Not Won": "Quote : Archived - Not Won",
       };
 
@@ -657,15 +617,12 @@ Source: SimPro Webhook (Backfilled)`;
         columnValues["deal_expected_close_date"] = dealData.closeDate;
       }
 
-      const ownerInfo = dealData.dealOwnerId
-        ? `\nDeal Owner: Assigned to "${dealData.salesperson}" (User ${dealData.dealOwnerId})`
-        : "\nDeal Owner: Not assigned (no mapping available)";
-
+      // UPDATED: Remove owner info from notes since user assignment is disabled
       columnValues["text_mktrtr9b"] = `SimPro Quote ID: ${
         dealData.simproQuoteId
       }
 Customer: ${dealData.accountName}
-Salesperson: ${dealData.salesperson || "Not specified"}${ownerInfo}
+Salesperson: ${dealData.salesperson || "Not specified"}
 Site: ${dealData.siteName || "Not specified"}
 Last Sync: ${new Date().toISOString()}`;
 
@@ -677,12 +634,8 @@ Last Sync: ${new Date().toISOString()}`;
         columnValues
       );
 
-      const finalOwnerInfo = dealData.dealOwnerId
-        ? ` with owner "${dealData.salesperson}"`
-        : ` (no owner assigned)`;
-
       console.log(
-        `[Monday] ✅ Created new deal: ${dealData.dealName} (${item.id}) with status "${mondayStatus}"${finalOwnerInfo}`
+        `[Monday] ✅ Created new deal: ${dealData.dealName} (${item.id}) with status "${mondayStatus}" (user assignment disabled)`
       );
 
       return {
