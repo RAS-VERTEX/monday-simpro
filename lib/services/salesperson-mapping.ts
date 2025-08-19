@@ -1,5 +1,4 @@
-// lib/services/salesperson-mapping.ts - Complete Safe Salesperson Mapping Service
-
+// lib/services/salesperson-mapping.ts - Updated with REAL Monday user IDs
 import { logger } from "@/lib/utils/logger";
 
 export interface MondayUser {
@@ -18,24 +17,22 @@ export interface SalespersonMappingResult {
 }
 
 export class SalespersonMappingService {
-  // ✅ Map SimPro salesperson names to Monday user IDs
-  // TODO: Replace these placeholder IDs with real Monday user IDs when you get them
-  // Run this query in Monday API to get real IDs: query { users { id name email enabled } }
+  // ✅ UPDATED: Real Monday user IDs from your production environment
   private static readonly SALESPERSON_MAPPING: { [key: string]: MondayUser } = {
-    "Hylton Denton": {
-      id: 12345678, // TODO: Replace with actual Monday user ID
-      name: "Hylton Denton",
-      email: "hylton@company.com", // Optional - for reference
+    "Phil Clark": {
+      id: 75400577,
+      name: "Phil Clark",
+      email: "team@rasvertex.com.au",
     },
     "Shane Kidby": {
-      id: 87654321, // TODO: Replace with actual Monday user ID
+      id: 80119678,
       name: "Shane Kidby",
-      email: "shane@company.com", // Optional - for reference
+      email: "shane@rasvertex.com.au",
     },
-    "Phil Clark": {
-      id: 11223344, // TODO: Replace with actual Monday user ID
-      name: "Phil Clark",
-      email: "phil@company.com", // Optional - for reference
+    "Hylton Denton": {
+      id: 80119681,
+      name: "Hylton Denton",
+      email: "hylton@rasvertex.com.au",
     },
   };
 
@@ -282,15 +279,15 @@ export class SalespersonMappingService {
     );
 
     const instructions = [
-      "📋 TO UPDATE WITH REAL MONDAY USER IDs:",
-      "1. Run this GraphQL query in Monday API playground:",
-      "   query { users { id name email enabled } }",
-      "2. Find your salespeople in the results",
-      "3. Replace the placeholder IDs in SALESPERSON_MAPPING above",
-      "4. Test with SalespersonMappingService.testMapping('Hylton Denton')",
-      "5. Monitor logs for mapping success/failures",
+      "✅ SALESPERSON MAPPING IS NOW ACTIVE:",
+      "- Phil Clark → Monday user 75400577",
+      "- Shane Kidby → Monday user 80119678",
+      "- Hylton Denton → Monday user 80119681",
       "",
-      "📝 CURRENT STATUS: Using placeholder IDs - update when ready",
+      "🔄 TO ENABLE SALESPERSON ASSIGNMENT:",
+      "1. Uncomment the salesperson mapping logic in mapping-service.ts",
+      "2. Add dealOwnerId to the deal creation in Monday API calls",
+      "3. Test the sync to see salespeople assigned to deals",
     ];
 
     return {

@@ -313,7 +313,7 @@ export class MondayClient {
         const mondayTypeLabel = typeMapping[contactType] || "Customer Contact";
 
         columnValues["title5"] = {
-          labels: [mondayTypeLabel], // FIXED: Array format required by Monday API
+          labels: [mondayTypeLabel],
         };
 
         console.log(
@@ -357,8 +357,6 @@ export class MondayClient {
         }
       }
 
-      // REMOVED: text_mktr67s0 notes field - not useful, SimPro ID column is the reference
-
       columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
 
       const item = await this.createItem(
@@ -396,7 +394,6 @@ export class MondayClient {
 
       const mondayTypeLabel = typeMapping[contactType];
 
-      // FIXED: Use labels array for dropdown update
       await this.updateColumnValue(contactId, boardId, "title5", {
         labels: [mondayTypeLabel],
       });
@@ -510,17 +507,20 @@ export class MondayClient {
           `[Monday] 🔄 Updating existing deal: ${existing.name} (${existing.id})`
         );
 
-        // COMMENTED OUT: Try to update owner for existing deals
-        // if (dealData.dealOwnerId) {
-        //   try {
-        //     await this.updateColumnValue(existing.id, boardId, "deal_owner", {
-        //       personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
-        //     });
-        //     console.log(`[Monday] ✅ Updated deal owner to "${dealData.salesperson}" (User ${dealData.dealOwnerId})`);
-        //   } catch (ownerError) {
-        //     console.warn(`[Monday] ⚠️ Could not assign owner "${dealData.salesperson}" - continuing: ${ownerError}`);
-        //   }
-        // }
+        if (dealData.dealOwnerId) {
+          try {
+            await this.updateColumnValue(existing.id, boardId, "deal_owner", {
+              personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
+            });
+            console.log(
+              `[Monday] ✅ Updated deal owner to "${dealData.salesperson}" (User ${dealData.dealOwnerId})`
+            );
+          } catch (ownerError) {
+            console.warn(
+              `[Monday] ⚠️ Could not assign owner "${dealData.salesperson}" - continuing: ${ownerError}`
+            );
+          }
+        }
 
         const dealStatus = dealData.stage;
         if (
@@ -553,18 +553,21 @@ export class MondayClient {
         columnValues["deal_value"] = dealData.dealValue;
       }
 
-      // COMMENTED OUT: Deal owner assignment
-      // if (dealData.dealOwnerId) {
-      //   try {
-      //     columnValues["deal_owner"] = {
-      //       personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
-      //     };
-      //     console.log(`[Monday] 👤 Will assign owner: "${dealData.salesperson}" (User ${dealData.dealOwnerId})`);
-      //   } catch (ownerError) {
-      //     console.warn(`[Monday] ⚠️ Could not prepare owner assignment for "${dealData.salesperson}" - continuing without: ${ownerError}`);
-      //     delete columnValues["deal_owner"];
-      //   }
-      // }
+      if (dealData.dealOwnerId) {
+        try {
+          columnValues["deal_owner"] = {
+            personsAndTeams: [{ id: dealData.dealOwnerId, kind: "person" }],
+          };
+          console.log(
+            `[Monday] 👤 Will assign owner: "${dealData.salesperson}" (User ${dealData.dealOwnerId})`
+          );
+        } catch (ownerError) {
+          console.warn(
+            `[Monday] ⚠️ Could not prepare owner assignment for "${dealData.salesperson}" - continuing without: ${ownerError}`
+          );
+          delete columnValues["deal_owner"];
+        }
+      }
 
       const statusMapping: { [key: string]: string } = {
         "Quote: Sent": "Quote: Sent",

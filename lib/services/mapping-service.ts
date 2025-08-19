@@ -6,8 +6,7 @@ import {
   MondayDealStage,
 } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
-// COMMENTED OUT: Salesperson mapping import
-// import { SalespersonMappingService } from "./salesperson-mapping";
+import { SalespersonMappingService } from "./salesperson-mapping";
 
 export interface QuoteToMondayMapping {
   account: MondayAccountData;
@@ -45,16 +44,18 @@ export class MappingService {
 
     const simproSalesperson = quote.Salesperson?.Name || "";
 
-    // COMMENTED OUT: All user mapping logic
-    // let mondayUserId: number | null = null;
-    // try {
-    //   const mappingResult = SalespersonMappingService.getMondayUserMapping(simproSalesperson);
-    //   SalespersonMappingService.logMappingResult(mappingResult);
-    //   mondayUserId = mappingResult.mondayUserId;
-    // } catch (error) {
-    //   logger.warn(`[Mapping Service] Salesperson mapping failed safely: ${error}`);
-    //   mondayUserId = null;
-    // }
+    let mondayUserId: number | null = null;
+    try {
+      const mappingResult =
+        SalespersonMappingService.getMondayUserMapping(simproSalesperson);
+      SalespersonMappingService.logMappingResult(mappingResult);
+      mondayUserId = mappingResult.mondayUserId;
+    } catch (error) {
+      logger.warn(
+        `[Mapping Service] Salesperson mapping failed safely: ${error}`
+      );
+      mondayUserId = null;
+    }
 
     const deal: MondayDealData = {
       dealName,
@@ -72,18 +73,23 @@ export class MappingService {
       simproQuoteId: quote.ID,
     };
 
-    // COMMENTED OUT: Salesperson logging
-    // try {
-    //   if (mondayUserId && simproSalesperson) {
-    //     logger.info(`[Mapping Service] 👤 Will assign "${simproSalesperson}" as deal owner (User ${mondayUserId})`);
-    //   } else if (simproSalesperson) {
-    //     logger.info(`[Mapping Service] 👤 Salesperson "${simproSalesperson}" noted but no Monday user assignment available`);
-    //   } else {
-    //     logger.debug(`[Mapping Service] No salesperson specified for quote ${quote.ID}`);
-    //   }
-    // } catch (logError) {
-    //   logger.warn(`[Mapping Service] Logging error: ${logError}`);
-    // }
+    try {
+      if (mondayUserId && simproSalesperson) {
+        logger.info(
+          `[Mapping Service] 👤 Will assign "${simproSalesperson}" as deal owner (User ${mondayUserId})`
+        );
+      } else if (simproSalesperson) {
+        logger.info(
+          `[Mapping Service] 👤 Salesperson "${simproSalesperson}" noted but no Monday user assignment available`
+        );
+      } else {
+        logger.debug(
+          `[Mapping Service] No salesperson specified for quote ${quote.ID}`
+        );
+      }
+    } catch (logError) {
+      logger.warn(`[Mapping Service] Logging error: ${logError}`);
+    }
 
     return { account, contacts, deal };
   }

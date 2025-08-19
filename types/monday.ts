@@ -1,6 +1,5 @@
 export interface MondayAccountData {
   accountName: string;
-  // REMOVED: description?: string; - not useful
   simproCustomerId: number;
   industry?: string;
 }
@@ -29,7 +28,7 @@ export interface MondayDealData {
   accountName: string;
   siteName?: string;
   simproQuoteId: number;
-  // COMMENTED OUT: dealOwnerId?: number;
+  dealOwnerId?: number;
 }
 
 export interface MondayItem {
