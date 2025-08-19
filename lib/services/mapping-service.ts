@@ -138,6 +138,16 @@ export class MappingService {
   private extractContacts(quote: EnhancedSimProQuote): MondayContactData[] {
     const contacts: MondayContactData[] = [];
 
+    console.log(`🔍 [CONTACT DEBUG] Quote ${quote.ID} - RAW CONTACT DATA:`, {
+      CustomerContact: quote.CustomerContact,
+      CustomerContactDetails: quote.CustomerContactDetails,
+      SiteContact: quote.SiteContact,
+      SiteContactDetails: quote.SiteContactDetails,
+      // Also check these alternate fields
+      Customer: quote.Customer,
+      Site: quote.Site,
+    });
+
     console.log(
       `🔍 [CONTACT DEBUG] Quote ${quote.ID} - Processing main contact only`
     );
