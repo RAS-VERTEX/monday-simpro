@@ -31,10 +31,10 @@ export class MondayAccounts {
       // Prepare column values
       const columnValues: any = {};
 
-      if (accountData.description) {
-        columnValues[this.columnIds.accounts.description] =
-          accountData.description;
-      }
+      // if (accountData.description) {
+      //   columnValues[this.columnIds.accounts.description] =
+      //     accountData.description;
+      // }
 
       // Add SimPro tracking info
       const notes = `SimPro Customer ID: ${
