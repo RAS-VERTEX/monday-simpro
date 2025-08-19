@@ -1,3 +1,4 @@
+// lib/services/mapping-service.ts - Complete updated file with salesperson assignment enabled
 import { EnhancedSimProQuote } from "@/lib/clients/simpro/simpro-quotes";
 import {
   MondayDealData,
@@ -6,6 +7,7 @@ import {
   MondayDealStage,
 } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
+// ✅ ENABLE: Salesperson mapping import
 import { SalespersonMappingService } from "./salesperson-mapping";
 
 export interface QuoteToMondayMapping {
@@ -36,14 +38,15 @@ export class MappingService {
 
     const account: MondayAccountData = {
       accountName: quote.Customer.CompanyName,
-      // REMOVED: description field - not useful
       simproCustomerId: quote.Customer.ID,
     };
 
+    // ✅ SIMPLIFIED: Extract only main customer contact
     const contacts: MondayContactData[] = this.extractContacts(quote);
 
     const simproSalesperson = quote.Salesperson?.Name || "";
 
+    // ✅ ENABLE: Get Monday user ID for salesperson
     let mondayUserId: number | null = null;
     try {
       const mappingResult =
@@ -63,7 +66,7 @@ export class MappingService {
       stage: mondayStage,
       accountName: quote.Customer.CompanyName,
       salesperson: simproSalesperson || "Not specified",
-      // COMMENTED OUT: dealOwnerId: mondayUserId || undefined,
+      dealOwnerId: mondayUserId || undefined, // ✅ ENABLE
       dateIssued: quote.DateIssued || new Date().toISOString().split("T")[0],
       dueDate:
         quote.DueDate ||
@@ -73,6 +76,7 @@ export class MappingService {
       simproQuoteId: quote.ID,
     };
 
+    // ✅ ENABLE: Salesperson logging
     try {
       if (mondayUserId && simproSalesperson) {
         logger.info(
@@ -130,35 +134,27 @@ export class MappingService {
     return statusMapping[cleanStatus] || "Quote: Sent";
   }
 
-  // REMOVED: buildAccountDescription method - not needed anymore
-
+  // ✅ SIMPLIFIED: Extract only main customer contact
   private extractContacts(quote: EnhancedSimProQuote): MondayContactData[] {
     const contacts: MondayContactData[] = [];
 
-    console.log(`🔍 [CONTACT DEBUG] Quote ${quote.ID} - Full contact data:`, {
-      CustomerContact: quote.CustomerContact,
-      CustomerContactDetails: quote.CustomerContactDetails,
-      SiteContact: quote.SiteContact,
-      SiteContactDetails: quote.SiteContactDetails,
-    });
+    console.log(
+      `🔍 [CONTACT DEBUG] Quote ${quote.ID} - Processing main contact only`
+    );
 
-    // Customer contact
-    if (
-      quote.CustomerContact?.GivenName ||
-      quote.CustomerContact?.FamilyName ||
-      quote.CustomerContact?.Name
-    ) {
+    // Only process main customer contact - simplified approach
+    if (quote.CustomerContact && quote.CustomerContact.ID) {
       const contactName =
         quote.CustomerContact.GivenName && quote.CustomerContact.FamilyName
           ? `${quote.CustomerContact.GivenName} ${quote.CustomerContact.FamilyName}`.trim()
-          : quote.CustomerContact.Name || "Unknown Contact";
+          : quote.CustomerContact.Name || "Unknown Customer Contact";
 
       const contactEmail = quote.CustomerContactDetails?.Email;
       const contactWorkPhone = quote.CustomerContactDetails?.WorkPhone;
       const contactCellPhone = quote.CustomerContactDetails?.CellPhone;
       const contactPhone = contactWorkPhone || contactCellPhone;
 
-      console.log(`📧 [CONTACT DEBUG] Customer Contact "${contactName}":`, {
+      console.log(`📧 [CONTACT DEBUG] Main Contact "${contactName}":`, {
         email: contactEmail,
         workPhone: contactWorkPhone,
         cellPhone: contactCellPhone,
@@ -182,102 +178,30 @@ export class MappingService {
       };
 
       console.log(
-        `✅ [CONTACT DEBUG] Final contact data for "${contactName}":`,
+        `✅ [CONTACT DEBUG] Final main contact data for "${contactName}":`,
         contactData
       );
       contacts.push(contactData);
-    }
 
-    // Site contact - only if different from customer contact
-    if (
-      quote.SiteContact?.GivenName ||
-      quote.SiteContact?.FamilyName ||
-      quote.SiteContact?.Name
-    ) {
-      const siteContactId = quote.SiteContact.ID;
-      const customerContactId = quote.CustomerContact?.ID;
-
-      // Skip if same SimPro contact ID
-      if (siteContactId === customerContactId) {
-        console.log(
-          `🔄 [CONTACT DEBUG] Site contact ${siteContactId} is same as customer contact - skipping duplicate`
-        );
-        logger.debug(
-          `[Mapping Service] Skipped duplicate site contact ${siteContactId}`
-        );
-        return contacts;
-      }
-
-      const siteContactName =
-        quote.SiteContact.GivenName && quote.SiteContact.FamilyName
-          ? `${quote.SiteContact.GivenName} ${quote.SiteContact.FamilyName}`.trim()
-          : quote.SiteContact.Name || "Unknown Site Contact";
-
-      const siteContactEmail = quote.SiteContactDetails?.Email;
-      const customerContactEmail = quote.CustomerContactDetails?.Email;
-
-      // SIMPLE DUPLICATE DETECTION: Same name + same email = same person
-      const customerContactName = contacts[0]?.contactName;
-      const isSamePerson =
-        siteContactName.toLowerCase().replace(/\s+/g, "") ===
-          customerContactName?.toLowerCase().replace(/\s+/g, "") &&
-        siteContactEmail?.toLowerCase() ===
-          customerContactEmail?.toLowerCase() &&
-        siteContactEmail &&
-        customerContactEmail; // Both must have emails
-
-      if (isSamePerson) {
-        console.log(
-          `🔄 [CONTACT DEBUG] Site contact "${siteContactName}" appears to be same person as customer contact - skipping duplicate`
-        );
-        logger.debug(
-          `[Mapping Service] Skipped duplicate contact: ${siteContactName} (same name + email as customer contact)`
-        );
-        return contacts;
-      }
-
-      // Different person - create separate site contact
-      const contactWorkPhone = quote.SiteContactDetails?.WorkPhone;
-      const contactCellPhone = quote.SiteContactDetails?.CellPhone;
-      const contactPhone = contactWorkPhone || contactCellPhone;
-
-      console.log(`📧 [CONTACT DEBUG] Site Contact "${siteContactName}":`, {
-        email: siteContactEmail,
-        workPhone: contactWorkPhone,
-        cellPhone: contactCellPhone,
-        finalPhone: contactPhone,
-        department: quote.SiteContactDetails?.Department,
-        position: quote.SiteContactDetails?.Position,
-        contactId: quote.SiteContact.ID,
-        customerId: quote.Customer.ID,
-      });
-
-      const contactData: MondayContactData = {
-        contactName: siteContactName,
-        companyName: quote.Customer.CompanyName,
-        contactType: "site",
-        siteName: quote.Site?.Name || "",
-        simproContactId: quote.SiteContact.ID,
-        simproCustomerId: quote.Customer.ID,
-        email: siteContactEmail,
-        phone: contactPhone,
-        department: quote.SiteContactDetails?.Department,
-        position: quote.SiteContactDetails?.Position,
-      };
-
-      console.log(
-        `✅ [CONTACT DEBUG] Final site contact data for "${siteContactName}":`,
-        contactData
+      logger.info(
+        `[Mapping Service] 📧 Using main contact only: ${contactName}`
       );
-      contacts.push(contactData);
+    } else {
+      logger.warn(
+        `[Mapping Service] No main customer contact found for quote ${quote.ID}`
+      );
     }
 
     console.log(
-      `📊 [CONTACT DEBUG] Total contacts extracted for quote ${quote.ID}: ${contacts.length}`
+      `📊 [CONTACT DEBUG] Total contacts extracted for quote ${quote.ID}: ${contacts.length} (simplified approach)`
     );
-    logger.debug(
-      `[Mapping Service] Extracted ${contacts.length} contacts from quote ${quote.ID}`
-    );
+
     return contacts;
   }
+
+  // ✅ REMOVED: The complex extractContacts method with site contact logic
+  // This simplified version only creates the main customer contact to avoid:
+  // - Duplicate contact issues
+  // - Complex contact matching logic
+  // - Cleaner data in Monday.com
 }

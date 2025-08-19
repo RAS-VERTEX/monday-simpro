@@ -1,5 +1,3 @@
-// lib/clients/monday/monday-config.ts - Updated with correct column IDs from discovery
-
 export interface MondayBoardConfig {
   accounts: string;
   contacts: string;
@@ -32,30 +30,29 @@ export interface MondayColumnIds {
   };
 }
 
-// ✅ UPDATED: Using actual column IDs from your Monday boards
 export const MONDAY_COLUMN_IDS: MondayColumnIds = {
   accounts: {
-    description: "company_description",
-    notes: "text_mktrez5x",
+    description: "dropdown_mktjs43t", // ✅ FIXED: From board discovery
+    notes: "text_mktqry14", // ✅ FIXED: From board discovery
     contacts_relation: "account_contact",
     deals_relation: "account_deal",
   },
   contacts: {
     email: "contact_email",
     phone: "contact_phone",
-    notes: "text_mktr67s0",
+    notes: "text_mktqzy0q", // ✅ FIXED: From board discovery
     accounts_relation: "contact_account",
     deals_relation: "contact_deal",
-    type: "title5",
+    type: "title5", // This might need checking if contact type isn't working
   },
   deals: {
     value: "deal_value",
-    stage: "color_mktrw6k3",
+    stage: "deal_stage", // ✅ FIXED: From board discovery
     close_date: "deal_expected_close_date",
-    notes: "text_mktrtr9b",
+    notes: "text_mktq93t9", // ✅ From board discovery
     contacts_relation: "deal_contact",
     accounts_relation: "deal_account",
-    owner: "deal_owner",
+    owner: "deal_owner", // ✅ From board discovery
   },
 };
 

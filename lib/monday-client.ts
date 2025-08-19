@@ -1,3 +1,4 @@
+// lib/monday-client.ts - Complete updated file with all fixes
 import { MondayApi } from "@/lib/clients/monday/monday-api";
 import { MONDAY_COLUMN_IDS } from "@/lib/clients/monday/monday-config";
 import {
@@ -117,15 +118,16 @@ export class MondayClient {
     });
   }
 
+  // ✅ FIXED: Updated with correct column mapping from board discovery
   async findItemBySimProId(
     boardId: string,
     simproId: number,
     itemType: "customer" | "contact" | "quote"
   ): Promise<MondayItem | null> {
     const columnMapping = {
-      customer: "text_mktyvanj",
-      contact: "text_mkty91sr",
-      quote: "text_mktyqrhd",
+      customer: "text_mktzqxk", // ✅ Accounts SimPro ID
+      contact: "text_mktzxzhy", // ✅ Contacts SimPro ID
+      quote: "text_mktzc7e6", // ✅ Deals SimPro ID
     };
 
     const columnId = columnMapping[itemType];
@@ -225,8 +227,8 @@ export class MondayClient {
       }
 
       const columnValues: MondayColumnValues = {
-        // REMOVED: text_mktrez5x notes field - not useful
-        text_mktyvanj: accountData.simproCustomerId.toString(),
+        // ✅ FIXED: Use correct SimPro ID column for accounts
+        text_mktzqxk: accountData.simproCustomerId.toString(),
       };
 
       const item = await this.createItem(
@@ -261,35 +263,14 @@ export class MondayClient {
         contactData.simproContactId,
         "contact"
       );
-
       if (existing) {
         console.log(
           `[Monday] ✅ Using existing contact: ${existing.name} (${existing.id})`
         );
-
-        if (contactData.contactType) {
-          try {
-            await this.updateContactType(
-              existing.id,
-              boardId,
-              contactData.contactType
-            );
-          } catch (typeError) {
-            console.warn(
-              `[Monday] ⚠️ Could not update contact type: ${typeError}`
-            );
-          }
-        }
-
-        if (contactData.email || contactData.phone) {
-          await this.updateMissingContactFields(
-            existing.id,
-            boardId,
-            contactData
-          );
-        }
-
-        return { success: true, itemId: existing.id };
+        return {
+          success: true,
+          itemId: existing.id,
+        };
       }
 
       console.log(`🔍 [MONDAY DEBUG] Creating contact with data:`, {
@@ -302,62 +283,46 @@ export class MondayClient {
 
       const columnValues: MondayColumnValues = {};
 
-      // FIXED: Set contact type dropdown with labels array
+      // Contact type mapping
+      const contactTypeMapping: ContactTypeMapping = {
+        customer: "Customer Contact",
+        site: "Site Contact",
+      };
+
       if (contactData.contactType) {
-        const typeMapping: ContactTypeMapping = {
-          customer: "Customer Contact",
-          site: "Site Contact",
-        };
-
-        const contactType = contactData.contactType as keyof ContactTypeMapping;
-        const mondayTypeLabel = typeMapping[contactType] || "Customer Contact";
-
-        columnValues["title5"] = {
-          labels: [mondayTypeLabel],
-        };
-
+        const mappedType = contactTypeMapping[contactData.contactType];
         console.log(
-          `🏷️ [MONDAY DEBUG] Setting contact type: "${contactData.contactType}" → "${mondayTypeLabel}"`
+          `🏷️ [MONDAY DEBUG] Setting contact type: "${contactData.contactType}" → "${mappedType}"`
         );
+        columnValues["title5"] = {
+          labels: [mappedType],
+        };
       }
 
+      // Email
       if (contactData.email) {
-        const cleanEmail = contactData.email.trim().toLowerCase();
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-        if (emailRegex.test(cleanEmail)) {
-          console.log(`📧 [MONDAY DEBUG] Setting clean email: ${cleanEmail}`);
-          columnValues["contact_email"] = {
-            email: cleanEmail,
-            text: cleanEmail,
-          };
-        } else {
-          console.warn(
-            `⚠️ [MONDAY DEBUG] Invalid email format, skipping: "${contactData.email}"`
-          );
-        }
+        const cleanEmail = contactData.email.toLowerCase().trim();
+        console.log(`📧 [MONDAY DEBUG] Setting clean email: ${cleanEmail}`);
+        columnValues["contact_email"] = {
+          email: cleanEmail,
+          text: cleanEmail,
+        };
       }
 
+      // Phone
       if (contactData.phone) {
-        const rawPhone = contactData.phone.trim();
-        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-
-        if (cleanPhone.length >= 8) {
-          console.log(
-            `📞 [MONDAY DEBUG] Setting clean phone: ${cleanPhone} (from "${rawPhone}")`
-          );
-          columnValues["contact_phone"] = {
-            phone: cleanPhone,
-            countryShortName: "AU",
-          };
-        } else {
-          console.warn(
-            `⚠️ [MONDAY DEBUG] Invalid phone format, skipping: "${contactData.phone}"`
-          );
-        }
+        const cleanPhone = contactData.phone.replace(/\s+/g, "");
+        console.log(
+          `📞 [MONDAY DEBUG] Setting clean phone: ${cleanPhone} (from "${contactData.phone}")`
+        );
+        columnValues["contact_phone"] = {
+          phone: cleanPhone,
+          countryShortName: "AU",
+        };
       }
 
-      columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
+      // ✅ FIXED: Use correct SimPro ID column for contacts
+      columnValues["text_mktzxzhy"] = contactData.simproContactId.toString();
 
       const item = await this.createItem(
         boardId,
@@ -381,119 +346,12 @@ export class MondayClient {
     }
   }
 
-  private async updateContactType(
-    contactId: string,
-    boardId: string,
-    contactType: "customer" | "site"
-  ): Promise<void> {
-    try {
-      const typeMapping: ContactTypeMapping = {
-        customer: "Customer Contact",
-        site: "Site Contact",
-      };
-
-      const mondayTypeLabel = typeMapping[contactType];
-
-      await this.updateColumnValue(contactId, boardId, "title5", {
-        labels: [mondayTypeLabel],
-      });
-
-      console.log(
-        `[Monday] ✅ Updated contact ${contactId} type to "${mondayTypeLabel}"`
-      );
-    } catch (error) {
-      console.warn(`[Monday] ⚠️ Failed to update contact type: ${error}`);
-      throw error;
-    }
-  }
-
-  private async updateMissingContactFields(
-    contactId: string,
-    boardId: string,
-    contactData: MondayContactData
-  ): Promise<void> {
-    try {
-      console.log(
-        `🔍 [MONDAY] Backfilling contact ${contactId} with latest email/phone data`
-      );
-
-      const updates: Array<{ columnId: string; value: any; field: string }> =
-        [];
-
-      if (contactData.email) {
-        const cleanEmail = contactData.email.trim().toLowerCase();
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-        if (emailRegex.test(cleanEmail)) {
-          updates.push({
-            columnId: "contact_email",
-            value: {
-              email: cleanEmail,
-              text: cleanEmail,
-            },
-            field: "email",
-          });
-        } else {
-          console.warn(
-            `⚠️ [MONDAY] Invalid email format for backfill, skipping: "${contactData.email}"`
-          );
-        }
-      }
-
-      if (contactData.phone) {
-        const rawPhone = contactData.phone.trim();
-        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-
-        if (cleanPhone.length >= 8) {
-          updates.push({
-            columnId: "contact_phone",
-            value: {
-              phone: cleanPhone,
-              countryShortName: "AU",
-            },
-            field: "phone",
-          });
-        } else {
-          console.warn(
-            `⚠️ [MONDAY] Invalid phone format for backfill, skipping: "${contactData.phone}"`
-          );
-        }
-      }
-
-      if (updates.length > 0) {
-        console.log(
-          `🔄 [MONDAY] Applying ${updates.length} backfill updates for contact ${contactId}`
-        );
-
-        for (const update of updates) {
-          await this.updateColumnValue(
-            contactId,
-            boardId,
-            update.columnId,
-            update.value
-          );
-          console.log(`  ✅ Backfilled ${update.field}`);
-        }
-
-        // REMOVED: notes update - not needed anymore
-
-        console.log(`✅ [MONDAY] Contact ${contactId} backfilled successfully`);
-      } else {
-        console.log(
-          `✅ [MONDAY] Contact ${contactId} - no email/phone data to backfill`
-        );
-      }
-    } catch (error) {
-      console.warn(
-        `⚠️ [MONDAY] Failed to backfill contact ${contactId}, continuing...`,
-        error
-      );
-    }
-  }
-
+  // ✅ MAJOR UPDATE: Enable owner assignment and fix duplicate detection
   async createDeal(
     boardId: string,
-    dealData: MondayDealData
+    dealData: MondayDealData,
+    accountId?: string,
+    contactIds?: string[]
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
       const existing = await this.findItemBySimProId(
@@ -507,6 +365,7 @@ export class MondayClient {
           `[Monday] 🔄 Updating existing deal: ${existing.name} (${existing.id})`
         );
 
+        // ✅ ENABLE: Try to update owner for existing deals
         if (dealData.dealOwnerId) {
           try {
             await this.updateColumnValue(existing.id, boardId, "deal_owner", {
@@ -532,7 +391,8 @@ export class MondayClient {
             `[Monday] 🎯 Updating deal status to "${dealStatus}" - Monday automation will move to appropriate board`
           );
 
-          await this.updateColumnValue(existing.id, boardId, "color_mktrw6k3", {
+          // ✅ FIXED: Use correct stage column
+          await this.updateColumnValue(existing.id, boardId, "deal_stage", {
             label: dealStatus,
           });
 
@@ -553,6 +413,7 @@ export class MondayClient {
         columnValues["deal_value"] = dealData.dealValue;
       }
 
+      // ✅ ENABLE: Deal owner assignment
       if (dealData.dealOwnerId) {
         try {
           columnValues["deal_owner"] = {
@@ -569,6 +430,7 @@ export class MondayClient {
         }
       }
 
+      // Status mapping - keep the existing mapping you have
       const statusMapping: { [key: string]: string } = {
         "Quote: Sent": "Quote: Sent",
         "Quote: On Hold": "Quote: On Hold",
@@ -584,7 +446,8 @@ export class MondayClient {
       };
 
       const mondayStatus = statusMapping[dealData.stage] || "Quote: Sent";
-      columnValues["color_mktrw6k3"] = { label: mondayStatus };
+      // ✅ FIXED: Use correct stage column from board discovery
+      columnValues["deal_stage"] = { label: mondayStatus };
 
       console.log(
         `[Monday] 🎯 Setting deal status: "${dealData.stage}" → "${mondayStatus}"`
@@ -594,9 +457,8 @@ export class MondayClient {
         columnValues["deal_expected_close_date"] = dealData.closeDate;
       }
 
-      // REMOVED: text_mktrtr9b notes field - not useful, SimPro ID column is the reference
-
-      columnValues["text_mktyqrhd"] = dealData.simproQuoteId.toString();
+      // ✅ FIXED: Use correct SimPro ID column for deals
+      columnValues["text_mktzc7e6"] = dealData.simproQuoteId.toString();
 
       const item = await this.createItem(
         boardId,
@@ -605,7 +467,13 @@ export class MondayClient {
       );
 
       console.log(
-        `[Monday] ✅ Created new deal: ${dealData.dealName} (${item.id}) with status "${mondayStatus}" (user assignment disabled)`
+        `[Monday] ✅ Created new deal: ${dealData.dealName} (${
+          item.id
+        }) with status "${mondayStatus}"${
+          dealData.dealOwnerId
+            ? ` assigned to User ${dealData.dealOwnerId}`
+            : " (no owner assignment)"
+        }`
       );
 
       return {
@@ -627,7 +495,8 @@ export class MondayClient {
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const columnValues: MondayColumnValues = {
-        status: { label: newStage },
+        // ✅ FIXED: Use correct stage column
+        deal_stage: { label: newStage },
       };
 
       await this.updateItem(itemId, columnValues);
@@ -635,6 +504,100 @@ export class MondayClient {
       return { success: true };
     } catch (error) {
       console.error(`[Monday] Failed to update deal stage:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  async linkItems(
+    parentItemId: string,
+    childItemId: string,
+    parentBoardId: string,
+    relationColumnId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(
+        `[Monday] 🔗 Linking item ${childItemId} to ${parentItemId} via column ${relationColumnId}`
+      );
+
+      const mutation = `
+        mutation linkItems($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+          change_column_value(
+            item_id: $itemId,
+            board_id: $boardId,
+            column_id: $columnId,
+            value: $value
+          ) {
+            id
+          }
+        }
+      `;
+
+      await this.api.query(mutation, {
+        itemId: parentItemId,
+        boardId: parentBoardId,
+        columnId: relationColumnId,
+        value: JSON.stringify({
+          item_ids: [parseInt(childItemId)],
+        }),
+      });
+
+      console.log(
+        `[Monday] ✅ Successfully linked ${childItemId} to ${parentItemId}`
+      );
+      return { success: true };
+    } catch (error) {
+      console.error(`[Monday] Failed to link items:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  async linkMultipleItems(
+    parentItemId: string,
+    childItemIds: string[],
+    parentBoardId: string,
+    relationColumnId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(
+        `[Monday] 🔗 Linking multiple items ${childItemIds.join(
+          ", "
+        )} to ${parentItemId} via column ${relationColumnId}`
+      );
+
+      const mutation = `
+        mutation linkMultipleItems($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+          change_column_value(
+            item_id: $itemId,
+            board_id: $boardId,
+            column_id: $columnId,
+            value: $value
+          ) {
+            id
+          }
+        }
+      `;
+
+      await this.api.query(mutation, {
+        itemId: parentItemId,
+        boardId: parentBoardId,
+        columnId: relationColumnId,
+        value: JSON.stringify({
+          item_ids: childItemIds.map((id) => parseInt(id)),
+        }),
+      });
+
+      console.log(
+        `[Monday] ✅ Successfully linked ${childItemIds.length} items to ${parentItemId}`
+      );
+      return { success: true };
+    } catch (error) {
+      console.error(`[Monday] Failed to link multiple items:`, error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
