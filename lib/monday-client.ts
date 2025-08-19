@@ -225,10 +225,7 @@ export class MondayClient {
       }
 
       const columnValues: MondayColumnValues = {
-        // REMOVED: company_description field - not useful
-        text_mktrez5x: `SimPro Customer ID: ${accountData.simproCustomerId}
-Last Sync: ${new Date().toISOString()}
-Source: SimPro Webhook`,
+        // REMOVED: text_mktrez5x notes field - not useful
         text_mktyvanj: accountData.simproCustomerId.toString(),
       };
 
@@ -360,16 +357,7 @@ Source: SimPro Webhook`,
         }
       }
 
-      columnValues["text_mktr67s0"] = `SimPro Contact ID: ${
-        contactData.simproContactId
-      }
-Contact Type: ${contactData.contactType || "customer"}
-Department: ${contactData.department || "Not specified"}
-Position: ${contactData.position || "Not specified"}
-Email: ${contactData.email || "Not provided"}
-Phone: ${contactData.phone || "Not provided"}
-Last Sync: ${new Date().toISOString()}
-Source: SimPro`;
+      // REMOVED: text_mktr67s0 notes field - not useful, SimPro ID column is the reference
 
       columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
 
@@ -490,21 +478,7 @@ Source: SimPro`;
           console.log(`  ✅ Backfilled ${update.field}`);
         }
 
-        const updatedNotes = `SimPro Contact ID: ${contactData.simproContactId}
-Contact Type: ${contactData.contactType || "customer"}
-Department: ${contactData.department || "Not specified"}
-Position: ${contactData.position || "Not specified"}
-Email: ${contactData.email || "Not provided"}
-Phone: ${contactData.phone || "Not provided"}
-Last Sync: ${new Date().toISOString()}
-Source: SimPro Webhook (Backfilled)`;
-
-        await this.updateColumnValue(
-          contactId,
-          boardId,
-          "text_mktr67s0",
-          updatedNotes
-        );
+        // REMOVED: notes update - not needed anymore
 
         console.log(`✅ [MONDAY] Contact ${contactId} backfilled successfully`);
       } else {
@@ -617,14 +591,7 @@ Source: SimPro Webhook (Backfilled)`;
         columnValues["deal_expected_close_date"] = dealData.closeDate;
       }
 
-      // UPDATED: Remove owner info from notes since user assignment is disabled
-      columnValues["text_mktrtr9b"] = `SimPro Quote ID: ${
-        dealData.simproQuoteId
-      }
-Customer: ${dealData.accountName}
-Salesperson: ${dealData.salesperson || "Not specified"}
-Site: ${dealData.siteName || "Not specified"}
-Last Sync: ${new Date().toISOString()}`;
+      // REMOVED: text_mktrtr9b notes field - not useful, SimPro ID column is the reference
 
       columnValues["text_mktyqrhd"] = dealData.simproQuoteId.toString();
 
