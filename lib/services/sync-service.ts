@@ -1,3 +1,4 @@
+// lib/services/sync-service.ts - Complete file with all mirror relationships
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
@@ -72,7 +73,7 @@ export class SyncService {
         }
       `;
 
-      const result: any = await this.mondayApi.query(query, { boardId });
+      const result = await this.mondayApi.query(query, { boardId });
       const items = result.boards[0]?.items_page?.items || [];
 
       for (const item of items) {
@@ -104,6 +105,41 @@ export class SyncService {
         boardId,
       });
       return null;
+    }
+  }
+
+  async healthCheck(): Promise<{
+    simpro: { status: "up" | "down"; lastCheck: string; responseTime?: number };
+    monday: { status: "up" | "down"; lastCheck: string; responseTime?: number };
+  }> {
+    const startTime = Date.now();
+    const timestamp = new Date().toISOString();
+
+    try {
+      const simproTest = await this.simproApi.testConnection();
+      const mondayTest = await this.mondayApi.testConnection();
+      const responseTime = Date.now() - startTime;
+
+      return {
+        simpro: {
+          status: simproTest.success ? "up" : "down",
+          lastCheck: timestamp,
+          responseTime: simproTest.success ? responseTime : undefined,
+        },
+        monday: {
+          status: mondayTest.success ? "up" : "down",
+          lastCheck: timestamp,
+          responseTime: mondayTest.success ? responseTime : undefined,
+        },
+      };
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+      logger.error("[Sync Service] Health check failed", { error });
+
+      return {
+        simpro: { status: "down", lastCheck: timestamp },
+        monday: { status: "down", lastCheck: timestamp },
+      };
     }
   }
 
@@ -319,6 +355,239 @@ export class SyncService {
     }
   }
 
+  // ✅ COMPLETE: All mirror relationships implemented
+  private async processMappedQuote(
+    quoteId: number,
+    mappedData: any,
+    metrics: any
+  ): Promise<void> {
+    logger.info(
+      `[Sync Service] 🏢 Processing account: ${mappedData.account.accountName}`
+    );
+
+    const accountResult = await this.mondayApi.createAccount(
+      process.env.MONDAY_ACCOUNTS_BOARD_ID!,
+      mappedData.account
+    );
+
+    if (!accountResult.success || !accountResult.itemId) {
+      throw new Error(`Failed to create account: ${accountResult.error}`);
+    }
+
+    const accountId = accountResult.itemId;
+    if (
+      accountResult.itemId &&
+      !mappedData.account.accountName.includes("existing")
+    ) {
+      metrics.accountsCreated++;
+    }
+    logger.info(
+      `[Sync Service] ✅ Using existing account: ${mappedData.account.accountName}`
+    );
+
+    const contactIds: string[] = [];
+    for (const contactData of mappedData.contacts) {
+      logger.info(
+        `[Sync Service] 👤 Processing contact: ${contactData.contactName}`
+      );
+
+      const contactResult = await this.mondayApi.createContact(
+        process.env.MONDAY_CONTACTS_BOARD_ID!,
+        contactData
+      );
+
+      if (contactResult.success && contactResult.itemId) {
+        contactIds.push(contactResult.itemId);
+        metrics.contactsCreated++;
+
+        // ✅ LINK: Contact → Account
+        try {
+          await this.linkContactToAccount(contactResult.itemId, accountId);
+          logger.info(
+            `[Sync Service] 🔗 Linked contact ${contactResult.itemId} to account ${accountId}`
+          );
+          metrics.relationshipsLinked++;
+        } catch (linkError) {
+          logger.warn(
+            `[Sync Service] ⚠️ Failed to link contact to account: ${linkError}`
+          );
+        }
+      } else {
+        logger.warn(
+          `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
+        );
+      }
+    }
+
+    logger.info(
+      `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
+    );
+
+    const dealResult = await this.mondayApi.createDeal(
+      process.env.MONDAY_DEALS_BOARD_ID!,
+      mappedData.deal
+    );
+
+    if (!dealResult.success || !dealResult.itemId) {
+      throw new Error(`Failed to create deal: ${dealResult.error}`);
+    }
+
+    const dealId = dealResult.itemId;
+    metrics.dealsCreated++;
+    logger.info(
+      `[Sync Service] ✅ Deal processed: ${mappedData.deal.dealName} (${dealId})`
+    );
+
+    // ✅ LINK: Deal → Account (THIS WAS MISSING!)
+    try {
+      await this.linkDealToAccount(dealId, accountId);
+      logger.info(
+        `[Sync Service] 🔗 Linked deal ${dealId} to account ${accountId}`
+      );
+      metrics.relationshipsLinked++;
+    } catch (linkError) {
+      logger.warn(
+        `[Sync Service] ⚠️ Failed to link deal to account: ${linkError}`
+      );
+    }
+
+    // ✅ LINK: Deal → Contacts
+    if (contactIds.length > 0) {
+      try {
+        await this.linkDealToContacts(dealId, contactIds);
+        logger.info(
+          `[Sync Service] 🔗 Linked deal ${dealId} to ${contactIds.length} contacts`
+        );
+        metrics.relationshipsLinked++;
+      } catch (linkError) {
+        logger.warn(
+          `[Sync Service] ⚠️ Failed to link deal to contacts: ${linkError}`
+        );
+      }
+    }
+
+    // ✅ LINK: Contact → Deal (bidirectional)
+    for (const contactId of contactIds) {
+      try {
+        await this.linkContactToDeal(contactId, dealId);
+        logger.info(
+          `[Sync Service] 🔗 Linked contact ${contactId} to deal ${dealId}`
+        );
+        metrics.relationshipsLinked++;
+      } catch (linkError) {
+        logger.warn(
+          `[Sync Service] ⚠️ Failed to link contact to deal: ${linkError}`
+        );
+      }
+    }
+  }
+
+  // ✅ LINK: Contact → Account
+  private async linkContactToAccount(
+    contactId: string,
+    accountId: string
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    await this.mondayApi.query(mutation, {
+      itemId: contactId,
+      boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
+      columnId: "contact_account",
+      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
+    });
+  }
+
+  // ✅ LINK: Deal → Account (THIS WAS MISSING!)
+  private async linkDealToAccount(
+    dealId: string,
+    accountId: string
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    await this.mondayApi.query(mutation, {
+      itemId: dealId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
+      columnId: "deal_account",
+      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
+    });
+  }
+
+  // ✅ LINK: Deal → Contacts
+  private async linkDealToContacts(
+    dealId: string,
+    contactIds: string[]
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    await this.mondayApi.query(mutation, {
+      itemId: dealId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
+      columnId: "deal_contact",
+      value: JSON.stringify({
+        item_ids: contactIds.map((id) => parseInt(id)),
+      }),
+    });
+  }
+
+  // ✅ LINK: Contact → Deal (bidirectional)
+  private async linkContactToDeal(
+    contactId: string,
+    dealId: string
+  ): Promise<void> {
+    const mutation = `
+      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: $columnId
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+
+    await this.mondayApi.query(mutation, {
+      itemId: contactId,
+      boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
+      columnId: "contact_deal",
+      value: JSON.stringify({ item_ids: [parseInt(dealId)] }),
+    });
+  }
+
   private async enhanceSingleQuoteWithDetails(
     quote: any,
     companyId: number
@@ -399,271 +668,45 @@ export class SyncService {
     customerIds: number[],
     companyId: number
   ): Promise<Map<number, any>> {
-    const customerMap = new Map();
+    const customerDetails = new Map<number, any>();
 
     for (const customerId of customerIds) {
       try {
-        const customer: any = await this.simproApi.request(
-          `/companies/${companyId}/customers/companies/${customerId}`
+        const customer = await this.simproApi.request(
+          `/companies/${companyId}/customers/${customerId}/`
         );
-
-        customerMap.set(customerId, {
-          email: customer?.Email,
-          phone: customer?.Phone,
-          altPhone: customer?.AltPhone,
-          address: customer?.Address,
-        });
+        customerDetails.set(customerId, customer);
       } catch (error) {
-        console.warn(`⚠️ Failed to fetch customer ${customerId}:`, error);
+        console.warn(
+          `⚠️ [CONTACT FIX] Failed to fetch customer ${customerId}:`,
+          error
+        );
       }
     }
 
-    return customerMap;
+    return customerDetails;
   }
 
   private async fetchContactDetails(
     contactIds: number[],
     companyId: number
   ): Promise<Map<number, any>> {
-    const contactMap = new Map();
+    const contactDetails = new Map<number, any>();
 
     for (const contactId of contactIds) {
       try {
-        const contact: any = await this.simproApi.request(
-          `/companies/${companyId}/contacts/${contactId}`
+        const contact = await this.simproApi.request(
+          `/companies/${companyId}/contacts/${contactId}/`
         );
-
-        contactMap.set(contactId, {
-          Email: contact?.Email,
-          WorkPhone: contact?.WorkPhone,
-          CellPhone: contact?.CellPhone,
-          Department: contact?.Department,
-          Position: contact?.Position,
-        });
+        contactDetails.set(contactId, contact);
       } catch (error) {
-        console.warn(`⚠️ Failed to fetch contact ${contactId}:`, error);
-      }
-    }
-
-    return contactMap;
-  }
-
-  private async processMappedQuote(
-    quoteId: number,
-    mappedData: any,
-    metrics: any
-  ): Promise<void> {
-    logger.info(
-      `[Sync Service] 🏢 Processing account: ${mappedData.account.accountName}`
-    );
-
-    const accountResult = await this.mondayApi.createAccount(
-      process.env.MONDAY_ACCOUNTS_BOARD_ID!,
-      mappedData.account
-    );
-
-    if (!accountResult.success || !accountResult.itemId) {
-      throw new Error(`Failed to create account: ${accountResult.error}`);
-    }
-
-    const accountId = accountResult.itemId;
-    if (
-      accountResult.itemId &&
-      !mappedData.account.accountName.includes("existing")
-    ) {
-      metrics.accountsCreated++;
-    }
-    logger.info(
-      `[Sync Service] ✅ Using existing account: ${mappedData.account.accountName}`
-    );
-
-    const contactIds: string[] = [];
-    for (const contactData of mappedData.contacts) {
-      logger.info(
-        `[Sync Service] 👤 Processing contact: ${contactData.contactName}`
-      );
-
-      const contactResult = await this.mondayApi.createContact(
-        process.env.MONDAY_CONTACTS_BOARD_ID!,
-        contactData
-      );
-
-      if (contactResult.success && contactResult.itemId) {
-        contactIds.push(contactResult.itemId);
-        metrics.contactsCreated++;
-
-        // FIXED: Link contact to account using board_relation column
-        try {
-          await this.linkContactToAccount(contactResult.itemId, accountId);
-          logger.info(
-            `[Sync Service] 🔗 Linked contact ${contactResult.itemId} to account ${accountId}`
-          );
-          metrics.relationshipsLinked++;
-        } catch (linkError) {
-          logger.warn(
-            `[Sync Service] ⚠️ Failed to link contact to account: ${linkError}`
-          );
-        }
-      } else {
-        logger.warn(
-          `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
+        console.warn(
+          `⚠️ [CONTACT FIX] Failed to fetch contact ${contactId}:`,
+          error
         );
       }
     }
 
-    logger.info(
-      `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
-    );
-
-    const dealResult = await this.mondayApi.createDeal(
-      process.env.MONDAY_DEALS_BOARD_ID!,
-      mappedData.deal
-    );
-
-    if (!dealResult.success || !dealResult.itemId) {
-      throw new Error(`Failed to create deal: ${dealResult.error}`);
-    }
-
-    const dealId = dealResult.itemId;
-    metrics.dealsCreated++;
-    logger.info(
-      `[Sync Service] ✅ Deal processed: ${mappedData.deal.dealName} (${dealId})`
-    );
-
-    // FIXED: Link deal to contacts using board_relation column
-    if (contactIds.length > 0) {
-      try {
-        await this.linkDealToContacts(dealId, contactIds);
-        logger.info(
-          `[Sync Service] 🔗 Linked deal ${dealId} to ${contactIds.length} contacts`
-        );
-        metrics.relationshipsLinked++;
-      } catch (linkError) {
-        logger.warn(
-          `[Sync Service] ⚠️ Failed to link deal to contacts: ${linkError}`
-        );
-      }
-    }
-
-    // FIXED: Create bidirectional contact-deal relationships
-    for (const contactId of contactIds) {
-      try {
-        await this.linkContactToDeal(contactId, dealId);
-        logger.info(
-          `[Sync Service] 🔗 Linked contact ${contactId} to deal ${dealId}`
-        );
-        metrics.relationshipsLinked++;
-      } catch (linkError) {
-        logger.warn(
-          `[Sync Service] ⚠️ Failed to link contact to deal: ${linkError}`
-        );
-      }
-    }
-  }
-
-  // FIXED: Only use board_relation columns, not mirror columns
-  private async linkContactToAccount(
-    contactId: string,
-    accountId: string
-  ): Promise<void> {
-    const mutation = `
-      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: $columnId
-          value: $value
-        ) {
-          id
-        }
-      }
-    `;
-
-    // ✅ CORRECT: contact_account is "board_relation" type - can write
-    await this.mondayApi.query(mutation, {
-      itemId: contactId,
-      boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
-      columnId: "contact_account",
-      value: JSON.stringify({ item_ids: [parseInt(accountId)] }),
-    });
-  }
-
-  private async linkDealToContacts(
-    dealId: string,
-    contactIds: string[]
-  ): Promise<void> {
-    const mutation = `
-      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: $columnId
-          value: $value
-        ) {
-          id
-        }
-      }
-    `;
-
-    // ✅ CORRECT: deal_contact is "board_relation" type - can write
-    const contactIdNumbers = contactIds.map((id) => parseInt(id));
-    await this.mondayApi.query(mutation, {
-      itemId: dealId,
-      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      columnId: "deal_contact",
-      value: JSON.stringify({ item_ids: contactIdNumbers }),
-    });
-  }
-
-  private async linkContactToDeal(
-    contactId: string,
-    dealId: string
-  ): Promise<void> {
-    const mutation = `
-      mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: $columnId
-          value: $value
-        ) {
-          id
-        }
-      }
-    `;
-
-    // ✅ CORRECT: contact_deal is "board_relation" type - can write
-    await this.mondayApi.query(mutation, {
-      itemId: contactId,
-      boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
-      columnId: "contact_deal",
-      value: JSON.stringify({ item_ids: [parseInt(dealId)] }),
-    });
-  }
-
-  async healthCheck(): Promise<{
-    simpro: { status: "up" | "down"; lastCheck: string; responseTime?: number };
-    monday: { status: "up" | "down"; lastCheck: string; responseTime?: number };
-  }> {
-    const simproStart = Date.now();
-    const simproTest = await this.simproApi.testConnection();
-    const simproTime = Date.now() - simproStart;
-
-    const mondayStart = Date.now();
-    const mondayTest = await this.mondayApi.testConnection();
-    const mondayTime = Date.now() - mondayStart;
-
-    return {
-      simpro: {
-        status: simproTest.success ? "up" : "down",
-        lastCheck: new Date().toISOString(),
-        responseTime: simproTime,
-      },
-      monday: {
-        status: mondayTest.success ? "up" : "down",
-        lastCheck: new Date().toISOString(),
-        responseTime: mondayTime,
-      },
-    };
+    return contactDetails;
   }
 }
