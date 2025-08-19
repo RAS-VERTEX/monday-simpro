@@ -145,14 +145,25 @@ export class SyncService {
       const validStatuses = [
         "Quote: To Be Assigned",
         "Quote: To Be Scheduled",
+        "Quote : To Be Scheduled",
         "Quote: To Write",
         "Quote: Visit Scheduled",
+        "Quote : Visit Scheduled",
         "Quote: In Progress",
+        "Quote : In Progress",
         "Quote: Won",
+        "Quote : Won",
         "Quote: On Hold",
+        "Quote : On Hold",
         "Quote: Sent",
+        "Quote : Sent",
+        "Quote : Sent ",
+        "Quote: Due Date Reached",
+        "Quote : Due Date Reached",
         "Quote: Archived - Not Won",
+        "Quote : Archived - Not Won",
         "Quote: Archived - Won",
+        "Quote : Archived - Won",
       ];
 
       const statusName = basicQuote.Status?.Name?.trim();
