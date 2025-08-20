@@ -1,4 +1,4 @@
-// lib/services/sync-service.ts - Complete file with all mirror relationships
+// lib/services/sync-service.ts - REVERTED to original + ONLY deal-to-account linking fix
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
@@ -355,7 +355,7 @@ export class SyncService {
     }
   }
 
-  // ✅ COMPLETE: All mirror relationships implemented
+  // ✅ ORIGINAL LOGIC - ONLY ADDED deal-to-account linking
   private async processMappedQuote(
     quoteId: number,
     mappedData: any,
@@ -375,10 +375,8 @@ export class SyncService {
     }
 
     const accountId = accountResult.itemId;
-    if (
-      accountResult.itemId &&
-      !mappedData.account.accountName.includes("existing")
-    ) {
+    // ✅ ORIGINAL LOGIC: Check if it's actually a new account
+    if (accountResult.itemId && !accountResult.itemId.includes("existing")) {
       metrics.accountsCreated++;
     }
     logger.info(
@@ -400,7 +398,7 @@ export class SyncService {
         contactIds.push(contactResult.itemId);
         metrics.contactsCreated++;
 
-        // ✅ LINK: Contact → Account
+        // ORIGINAL: Link contact to account using board_relation column
         try {
           await this.linkContactToAccount(contactResult.itemId, accountId);
           logger.info(
@@ -438,7 +436,7 @@ export class SyncService {
       `[Sync Service] ✅ Deal processed: ${mappedData.deal.dealName} (${dealId})`
     );
 
-    // ✅ LINK: Deal → Account (THIS WAS MISSING!)
+    // ✅ ADD: Deal → Account linking (THIS WAS MISSING!)
     try {
       await this.linkDealToAccount(dealId, accountId);
       logger.info(
@@ -451,7 +449,7 @@ export class SyncService {
       );
     }
 
-    // ✅ LINK: Deal → Contacts
+    // ORIGINAL: Link deal to contacts using board_relation column
     if (contactIds.length > 0) {
       try {
         await this.linkDealToContacts(dealId, contactIds);
@@ -466,7 +464,7 @@ export class SyncService {
       }
     }
 
-    // ✅ LINK: Contact → Deal (bidirectional)
+    // ORIGINAL: Create bidirectional contact-deal relationships
     for (const contactId of contactIds) {
       try {
         await this.linkContactToDeal(contactId, dealId);
@@ -482,7 +480,7 @@ export class SyncService {
     }
   }
 
-  // ✅ LINK: Contact → Account
+  // ORIGINAL: Only use board_relation columns, not mirror columns
   private async linkContactToAccount(
     contactId: string,
     accountId: string
@@ -500,6 +498,7 @@ export class SyncService {
       }
     `;
 
+    // ✅ CORRECT: contact_account is "board_relation" type - can write
     await this.mondayApi.query(mutation, {
       itemId: contactId,
       boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
@@ -508,7 +507,7 @@ export class SyncService {
     });
   }
 
-  // ✅ LINK: Deal → Account (THIS WAS MISSING!)
+  // ✅ NEW: Deal → Account linking (THIS WAS MISSING!)
   private async linkDealToAccount(
     dealId: string,
     accountId: string
@@ -534,7 +533,7 @@ export class SyncService {
     });
   }
 
-  // ✅ LINK: Deal → Contacts
+  // ORIGINAL: Deal → Contacts linking
   private async linkDealToContacts(
     dealId: string,
     contactIds: string[]
@@ -562,7 +561,7 @@ export class SyncService {
     });
   }
 
-  // ✅ LINK: Contact → Deal (bidirectional)
+  // ORIGINAL: Contact → Deal linking
   private async linkContactToDeal(
     contactId: string,
     dealId: string
@@ -588,6 +587,7 @@ export class SyncService {
     });
   }
 
+  // ORIGINAL: Enhancement methods - NO CHANGES
   private async enhanceSingleQuoteWithDetails(
     quote: any,
     companyId: number
