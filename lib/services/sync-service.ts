@@ -187,9 +187,9 @@ export class SyncService {
       ) {
         return {
           success: false,
-          message: `Quote ${quoteId} value $${
+          message: `Quote ${quoteId} value ${
             basicQuote.Total?.ExTax || 0
-          } doesn't meet minimum $${config.minimumQuoteValue}`,
+          } doesn't meet minimum ${config.minimumQuoteValue}`,
         };
       }
 
@@ -201,22 +201,64 @@ export class SyncService {
         };
       }
 
-      const enhancedQuote = await this.simproQuotes.enhanceQuotesWithDetails(
+      const validStatuses = [
+        "Quote: To Be Assigned",
+        "Quote: To Be Scheduled",
+        "Quote : To Be Scheduled",
+        "Quote: To Write",
+        "Quote: Visit Scheduled",
+        "Quote : Visit Scheduled",
+        "Quote: In Progress",
+        "Quote : In Progress",
+        "Quote: Won",
+        "Quote : Won",
+        "Quote: On Hold",
+        "Quote : On Hold",
+        "Quote: Sent",
+        "Quote : Sent",
+        "Quote : Sent ",
+        "Quote: Due Date Reached",
+        "Quote : Due Date Reached",
+        "Quote: Archived - Not Won",
+        "Quote : Archived - Not Won",
+        "Quote: Archived - Won",
+        "Quote : Archived - Won",
+      ];
+
+      const statusName = basicQuote.Status?.Name?.trim();
+      if (!statusName || !validStatuses.includes(statusName)) {
+        return {
+          success: false,
+          message: `Quote ${quoteId} status "${statusName}" is not valid for sync`,
+        };
+      }
+
+      const isArchivedQuote = statusName?.includes("Archived");
+      if (!isArchivedQuote && basicQuote.IsClosed === true) {
+        return {
+          success: false,
+          message: `Quote ${quoteId} is closed and won't be synced`,
+        };
+      }
+
+      logger.info(`Quote ${quoteId} passes validation, syncing to Monday`);
+
+      const enhancedQuotes = await this.simproQuotes.enhanceQuotesWithDetails(
         [basicQuote],
         companyId
       );
 
-      if (!enhancedQuote.length) {
-        return {
-          success: false,
-          message: `Failed to enhance quote ${quoteId} with contact details`,
-        };
+      if (enhancedQuotes.length === 0) {
+        throw new Error(
+          `Failed to enhance quote ${quoteId} with contact details`
+        );
       }
 
-      const mappedData = this.mappingService.mapQuoteToMonday(enhancedQuote[0]);
+      const enhancedQuote = enhancedQuotes[0];
+      const mappedData = this.mappingService.mapQuoteToMonday(enhancedQuote);
 
       const metrics = {
-        quotesProcessed: 1,
+        quotesProcessed: 0,
         accountsCreated: 0,
         contactsCreated: 0,
         dealsCreated: 0,
@@ -226,12 +268,17 @@ export class SyncService {
 
       await this.processMappedQuote(quoteId, mappedData, metrics);
 
+      logger.info(`Quote ${quoteId} sync complete`);
+      logger.info(
+        `Summary: Accounts(${metrics.accountsCreated}), Contacts(${metrics.contactsCreated}), Deals(${metrics.dealsCreated})`
+      );
+
       return {
         success: true,
-        message: `Quote ${quoteId} synced successfully`,
+        message: `Quote ${quoteId} successfully synced: "${mappedData.deal.dealName}"`,
       };
     } catch (error) {
-      logger.error(`Failed to sync quote ${quoteId}`, { error });
+      logger.error(`Failed to sync single quote ${quoteId}`, { error });
       return {
         success: false,
         message: error instanceof Error ? error.message : "Unknown error",
