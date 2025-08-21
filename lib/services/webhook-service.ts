@@ -1,4 +1,4 @@
-// lib/services/webhook-service.ts - Enterprise-grade with intelligent caching and minimal API calls
+// lib/services/webhook-service.ts - Price-first validation to prevent wasted Monday API calls
 import { SyncService } from "./sync-service";
 import { SimProWebhookPayload } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -14,6 +14,7 @@ export class WebhookService {
   private itemCache = new Map<number, CachedItem>();
   private readonly CACHE_TTL = 300000; // 5 minutes
   private readonly DEBOUNCE_WINDOW = 30000; // 30 seconds
+  private readonly MINIMUM_QUOTE_VALUE = 10000; // $10k minimum
 
   constructor(private syncService: SyncService) {}
 
@@ -76,41 +77,6 @@ export class WebhookService {
     }
   }
 
-  private isDuplicateWebhook(eventType: string, quoteId: number): boolean {
-    const webhookKey = `${eventType}-${quoteId}`;
-    const now = Date.now();
-    const lastProcessed = this.processedWebhooks.get(webhookKey);
-
-    if (lastProcessed && now - lastProcessed < this.DEBOUNCE_WINDOW) {
-      logger.warn(
-        `Duplicate webhook blocked: ${webhookKey} (processed ${Math.round(
-          (now - lastProcessed) / 1000
-        )}s ago)`
-      );
-      return true;
-    }
-
-    return false;
-  }
-
-  private markWebhookProcessed(eventType: string, quoteId: number): void {
-    const webhookKey = `${eventType}-${quoteId}`;
-    const now = Date.now();
-
-    this.processedWebhooks.set(webhookKey, now);
-    this.cleanupOldWebhooks(now);
-  }
-
-  private cleanupOldWebhooks(now: number): void {
-    const keysToDelete: string[] = [];
-    this.processedWebhooks.forEach((timestamp, key) => {
-      if (now - timestamp > this.CACHE_TTL) {
-        keysToDelete.push(key);
-      }
-    });
-    keysToDelete.forEach((key) => this.processedWebhooks.delete(key));
-  }
-
   private async handleQuoteCreated(
     quoteId: number,
     companyId: number
@@ -118,7 +84,26 @@ export class WebhookService {
     try {
       logger.info(`Processing quote creation for quote ${quoteId}`);
 
-      // Check cache first
+      // STEP 1: Check price FIRST - no Monday API calls until we know it's valuable
+      const priceCheckResult = await this.checkQuoteValueFirst(
+        quoteId,
+        companyId
+      );
+      if (!priceCheckResult.meetsMinimum) {
+        logger.info(
+          `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE} - skipping all Monday API calls`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE}`,
+        };
+      }
+
+      logger.info(
+        `Quote ${quoteId} value $${priceCheckResult.value} meets minimum - proceeding with Monday sync`
+      );
+
+      // STEP 2: Check cache first
       if (this.isInCache(quoteId)) {
         const cached = this.itemCache.get(quoteId)!;
         logger.warn(
@@ -130,7 +115,7 @@ export class WebhookService {
         };
       }
 
-      // Single optimized lookup instead of 3 separate calls
+      // STEP 3: Single optimized lookup instead of 3 separate calls
       const existingDeal = await this.findDealOptimized(quoteId);
       if (existingDeal) {
         this.updateCache(quoteId, existingDeal);
@@ -143,17 +128,16 @@ export class WebhookService {
         };
       }
 
-      // Create new quote
+      // STEP 4: Create new quote (now we know it's valuable and doesn't exist)
       const result = await this.syncService.syncSingleQuote(
         quoteId,
         companyId,
         {
-          minimumQuoteValue: 10000,
+          minimumQuoteValue: this.MINIMUM_QUOTE_VALUE,
         }
       );
 
       if (result.success) {
-        // Cache the newly created item
         this.updateCache(quoteId, { id: "new", name: `Quote #${quoteId}` });
         logger.info(`Quote ${quoteId} created and synced to Monday`);
         return {
@@ -181,10 +165,29 @@ export class WebhookService {
     try {
       logger.info(`Processing quote update for quote ${quoteId}`);
 
-      // Check cache first
+      // STEP 1: Check price FIRST - no Monday API calls until we know it's valuable
+      const priceCheckResult = await this.checkQuoteValueFirst(
+        quoteId,
+        companyId
+      );
+      if (!priceCheckResult.meetsMinimum) {
+        logger.info(
+          `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE} - skipping all Monday API calls`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE}`,
+        };
+      }
+
+      logger.info(
+        `Quote ${quoteId} value $${priceCheckResult.value} meets minimum - checking if exists in Monday`
+      );
+
+      // STEP 2: Check cache first
       let existingDeal = this.getCachedItem(quoteId);
 
-      // If not in cache, do single optimized lookup
+      // STEP 3: If not in cache, do single optimized lookup
       if (!existingDeal) {
         existingDeal = await this.findDealOptimized(quoteId);
         if (existingDeal) {
@@ -192,6 +195,7 @@ export class WebhookService {
         }
       }
 
+      // STEP 4: If doesn't exist, treat as creation
       if (!existingDeal) {
         logger.info(
           `Quote ${quoteId} doesn't exist in Monday - treating update as creation`
@@ -199,17 +203,12 @@ export class WebhookService {
         return await this.handleQuoteCreated(quoteId, companyId);
       }
 
+      // STEP 5: Update existing quote (status only)
       logger.info(
         `Updating existing quote ${quoteId} ("${existingDeal.name}")`
       );
 
-      // Only fetch quote details if we need to check status
-      const basicQuote = await this.syncService.getSimProQuoteDetails(
-        companyId,
-        quoteId
-      );
-      const newStatus = basicQuote.Status?.Name?.trim();
-
+      const newStatus = priceCheckResult.basicQuote.Status?.Name?.trim();
       if (newStatus && this.isStatusUpdateNeeded(newStatus)) {
         await this.updateDealStatusOnly(existingDeal.id, newStatus);
         logger.info(`Quote ${quoteId} status updated to "${newStatus}"`);
@@ -284,6 +283,45 @@ export class WebhookService {
     }
   }
 
+  private async checkQuoteValueFirst(
+    quoteId: number,
+    companyId: number
+  ): Promise<{
+    meetsMinimum: boolean;
+    value: number;
+    basicQuote: any;
+  }> {
+    try {
+      // Single SimPro API call to get quote details
+      const basicQuote = await this.syncService.getSimProQuoteDetails(
+        companyId,
+        quoteId
+      );
+      const value = basicQuote.Total?.ExTax || 0;
+      const meetsMinimum = value >= this.MINIMUM_QUOTE_VALUE;
+
+      logger.debug(
+        `Quote ${quoteId} price check: $${value} (minimum: $${
+          this.MINIMUM_QUOTE_VALUE
+        }) - ${meetsMinimum ? "PASS" : "FAIL"}`
+      );
+
+      return {
+        meetsMinimum,
+        value,
+        basicQuote,
+      };
+    } catch (error) {
+      logger.error(`Failed to check quote ${quoteId} value`, { error });
+      // On error, assume it doesn't meet minimum to avoid unnecessary Monday API calls
+      return {
+        meetsMinimum: false,
+        value: 0,
+        basicQuote: null,
+      };
+    }
+  }
+
   private async findDealOptimized(quoteId: number): Promise<any | null> {
     try {
       const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
@@ -340,6 +378,41 @@ export class WebhookService {
     }
   }
 
+  private isDuplicateWebhook(eventType: string, quoteId: number): boolean {
+    const webhookKey = `${eventType}-${quoteId}`;
+    const now = Date.now();
+    const lastProcessed = this.processedWebhooks.get(webhookKey);
+
+    if (lastProcessed && now - lastProcessed < this.DEBOUNCE_WINDOW) {
+      logger.warn(
+        `Duplicate webhook blocked: ${webhookKey} (processed ${Math.round(
+          (now - lastProcessed) / 1000
+        )}s ago)`
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  private markWebhookProcessed(eventType: string, quoteId: number): void {
+    const webhookKey = `${eventType}-${quoteId}`;
+    const now = Date.now();
+
+    this.processedWebhooks.set(webhookKey, now);
+    this.cleanupOldWebhooks(now);
+  }
+
+  private cleanupOldWebhooks(now: number): void {
+    const keysToDelete: string[] = [];
+    this.processedWebhooks.forEach((timestamp, key) => {
+      if (now - timestamp > this.CACHE_TTL) {
+        keysToDelete.push(key);
+      }
+    });
+    keysToDelete.forEach((key) => this.processedWebhooks.delete(key));
+  }
+
   private isInCache(quoteId: number): boolean {
     const cached = this.itemCache.get(quoteId);
     if (!cached) return false;
@@ -376,7 +449,6 @@ export class WebhookService {
   }
 
   private isStatusUpdateNeeded(status: string): boolean {
-    // Only track the most critical status changes
     const criticalStatuses = [
       "Quote: Won",
       "Quote : Won",
