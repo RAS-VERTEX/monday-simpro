@@ -1,4 +1,4 @@
-// lib/services/sync-service.ts - REVERTED to original + ONLY deal-to-account linking fix
+// lib/services/sync-service.ts - COMPLETE VERSION with unified contact enhancement fix
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
@@ -226,10 +226,12 @@ export class SyncService {
         `🔧 [CONTACT FIX] Enhancing quote ${quoteId} with contact details...`
       );
 
-      const enhancedQuotes = await this.enhanceSingleQuoteWithDetails(
-        basicQuote,
+      // ✅ FIX: Use the SAME enhancement method as batch sync (working version)
+      const enhancedQuotes = await this.simproQuotes.enhanceQuotesWithDetails(
+        [basicQuote], // Pass as single-item array to use the working batch method
         companyId
       );
+
       if (enhancedQuotes.length === 0) {
         throw new Error(
           `Failed to enhance quote ${quoteId} with contact details`
@@ -587,126 +589,6 @@ export class SyncService {
     });
   }
 
-  // ORIGINAL: Enhancement methods - NO CHANGES
-  private async enhanceSingleQuoteWithDetails(
-    quote: any,
-    companyId: number
-  ): Promise<any[]> {
-    console.log(
-      `🔧 [CONTACT FIX] Starting contact detail enhancement for quote ${quote.ID}...`
-    );
-
-    const contactIds = [
-      quote.CustomerContact?.ID,
-      quote.SiteContact?.ID,
-    ].filter(Boolean);
-    const customerIds = [quote.Customer?.ID].filter(Boolean);
-
-    console.log(`🔧 [CONTACT FIX] Need to fetch details for:`, {
-      customerIds,
-      contactIds,
-      customerContact: quote.CustomerContact,
-      siteContact: quote.SiteContact,
-    });
-
-    if (contactIds.length === 0) {
-      console.log(
-        `⚠️ [CONTACT FIX] No contacts found to enhance for quote ${quote.ID}`
-      );
-      return [quote];
-    }
-
-    try {
-      const [customerDetailsMap, contactDetailsMap] = await Promise.all([
-        this.fetchCustomerDetails(customerIds, companyId),
-        this.fetchContactDetails(contactIds, companyId),
-      ]);
-
-      console.log(`🔧 [CONTACT FIX] Fetched details:`, {
-        customerDetails: Object.fromEntries(customerDetailsMap),
-        contactDetails: Object.fromEntries(contactDetailsMap),
-      });
-
-      const enhancedQuote = { ...quote };
-
-      if (quote.Customer?.ID && customerDetailsMap.has(quote.Customer.ID)) {
-        enhancedQuote.CustomerDetails = customerDetailsMap.get(
-          quote.Customer.ID
-        );
-      }
-
-      if (
-        quote.CustomerContact?.ID &&
-        contactDetailsMap.has(quote.CustomerContact.ID)
-      ) {
-        enhancedQuote.CustomerContactDetails = contactDetailsMap.get(
-          quote.CustomerContact.ID
-        );
-      }
-
-      if (
-        quote.SiteContact?.ID &&
-        contactDetailsMap.has(quote.SiteContact.ID)
-      ) {
-        enhancedQuote.SiteContactDetails = contactDetailsMap.get(
-          quote.SiteContact.ID
-        );
-      }
-
-      console.log(`✅ [CONTACT FIX] Enhanced quote ${quote.ID} successfully`);
-      return [enhancedQuote];
-    } catch (error) {
-      console.error(
-        `❌ [CONTACT FIX] Failed to enhance quote ${quote.ID}:`,
-        error
-      );
-      return [quote];
-    }
-  }
-
-  private async fetchCustomerDetails(
-    customerIds: number[],
-    companyId: number
-  ): Promise<Map<number, any>> {
-    const customerDetails = new Map<number, any>();
-
-    for (const customerId of customerIds) {
-      try {
-        const customer = await this.simproApi.request(
-          `/companies/${companyId}/customers/${customerId}/`
-        );
-        customerDetails.set(customerId, customer);
-      } catch (error) {
-        console.warn(
-          `⚠️ [CONTACT FIX] Failed to fetch customer ${customerId}:`,
-          error
-        );
-      }
-    }
-
-    return customerDetails;
-  }
-
-  private async fetchContactDetails(
-    contactIds: number[],
-    companyId: number
-  ): Promise<Map<number, any>> {
-    const contactDetails = new Map<number, any>();
-
-    for (const contactId of contactIds) {
-      try {
-        const contact = await this.simproApi.request(
-          `/companies/${companyId}/contacts/${contactId}/`
-        );
-        contactDetails.set(contactId, contact);
-      } catch (error) {
-        console.warn(
-          `⚠️ [CONTACT FIX] Failed to fetch contact ${contactId}:`,
-          error
-        );
-      }
-    }
-
-    return contactDetails;
-  }
+  // ✅ REMOVED: The broken enhanceSingleQuoteWithDetails, fetchCustomerDetails, and fetchContactDetails methods
+  // They had wrong API endpoints and are now replaced by the working versions in SimProQuotes class
 }
