@@ -15,6 +15,8 @@ export class WebhookService {
   private readonly CACHE_TTL = 300000; // 5 minutes
   private readonly DEBOUNCE_WINDOW = 30000; // 30 seconds
   private readonly MINIMUM_QUOTE_VALUE = 10000; // $10k minimum
+  private readonly MONDAY_SEARCH_DELAY = 2000; // 2 second delay for eventual consistency
+  private readonly MAX_SEARCH_RETRIES = 3; // Retry search if not found
 
   constructor(private syncService: SyncService) {}
 
@@ -41,6 +43,7 @@ export class WebhookService {
         throw new Error("Missing quote ID or company ID in webhook payload");
       }
 
+      // ✅ ENHANCED: More robust duplicate webhook detection
       if (this.isDuplicateWebhook(payload.ID, quoteId)) {
         return {
           success: true,
@@ -103,24 +106,12 @@ export class WebhookService {
         `Quote ${quoteId} value $${priceCheckResult.value} meets minimum - proceeding with Monday sync`
       );
 
-      // STEP 2: Check cache first
-      if (this.isInCache(quoteId)) {
-        const cached = this.itemCache.get(quoteId)!;
-        logger.warn(
-          `Quote ${quoteId} already exists in cache as "${cached.name}" - duplicate creation prevented`
-        );
-        return {
-          success: true,
-          message: `Quote ${quoteId} already exists - duplicate creation prevented`,
-        };
-      }
-
-      // STEP 3: Single optimized lookup instead of 3 separate calls
-      const existingDeal = await this.findDealOptimized(quoteId);
+      // ✅ ENHANCED: Multi-layer duplicate detection with retries
+      const existingDeal = await this.findExistingDealWithRetries(quoteId);
       if (existingDeal) {
         this.updateCache(quoteId, existingDeal);
         logger.warn(
-          `Quote ${quoteId} already exists as "${existingDeal.name}" - duplicate creation prevented`
+          `Quote ${quoteId} already exists as "${existingDeal.name}" (${existingDeal.id}) - duplicate creation prevented`
         );
         return {
           success: true,
@@ -129,6 +120,10 @@ export class WebhookService {
       }
 
       // STEP 4: Create new quote (now we know it's valuable and doesn't exist)
+      logger.info(
+        `Creating quote ${quoteId} - confirmed it doesn't exist in Monday`
+      );
+
       const result = await this.syncService.syncSingleQuote(
         quoteId,
         companyId,
@@ -138,8 +133,21 @@ export class WebhookService {
       );
 
       if (result.success) {
-        this.updateCache(quoteId, { id: "new", name: `Quote #${quoteId}` });
-        logger.info(`Quote ${quoteId} created and synced to Monday`);
+        // ✅ ENHANCED: Verify creation actually worked
+        await this.delay(1000); // Give Monday time to index
+        const verifyCreated = await this.findDealOptimized(quoteId);
+        if (verifyCreated) {
+          this.updateCache(quoteId, verifyCreated);
+          logger.info(
+            `Quote ${quoteId} created and verified in Monday (${verifyCreated.id})`
+          );
+        } else {
+          logger.warn(
+            `Quote ${quoteId} creation succeeded but could not verify in Monday`
+          );
+          this.updateCache(quoteId, { id: "new", name: `Quote #${quoteId}` });
+        }
+
         return {
           success: true,
           message: `Quote ${quoteId} created and synced to Monday.com`,
@@ -184,16 +192,8 @@ export class WebhookService {
         `Quote ${quoteId} value $${priceCheckResult.value} meets minimum - checking if exists in Monday`
       );
 
-      // STEP 2: Check cache first
-      let existingDeal = this.getCachedItem(quoteId);
-
-      // STEP 3: If not in cache, do single optimized lookup
-      if (!existingDeal) {
-        existingDeal = await this.findDealOptimized(quoteId);
-        if (existingDeal) {
-          this.updateCache(quoteId, existingDeal);
-        }
-      }
+      // ✅ ENHANCED: Use the same robust search for updates
+      const existingDeal = await this.findExistingDealWithRetries(quoteId);
 
       // STEP 4: If doesn't exist, treat as creation
       if (!existingDeal) {
@@ -205,7 +205,7 @@ export class WebhookService {
 
       // STEP 5: Update existing quote (status only)
       logger.info(
-        `Updating existing quote ${quoteId} ("${existingDeal.name}")`
+        `Updating existing quote ${quoteId} ("${existingDeal.name}") - ${existingDeal.id}`
       );
 
       const newStatus = priceCheckResult.basicQuote.Status?.Name?.trim();
@@ -242,19 +242,287 @@ export class WebhookService {
     }
   }
 
+  // ✅ NEW: Multi-layer duplicate detection with retries and delays
+  private async findExistingDealWithRetries(
+    quoteId: number
+  ): Promise<any | null> {
+    // Layer 1: Check cache first
+    if (this.isInCache(quoteId)) {
+      const cached = this.getCachedItem(quoteId);
+      logger.info(`Quote ${quoteId} found in cache: "${cached?.name}"`);
+      return cached;
+    }
+
+    // Layer 2: Search Monday with retries and delays
+    for (let attempt = 1; attempt <= this.MAX_SEARCH_RETRIES; attempt++) {
+      logger.info(
+        `Quote ${quoteId} search attempt ${attempt}/${this.MAX_SEARCH_RETRIES}`
+      );
+
+      // Add delay for eventual consistency (except first attempt)
+      if (attempt > 1) {
+        const delay = this.MONDAY_SEARCH_DELAY * attempt; // Increasing delay
+        logger.info(`Waiting ${delay}ms for Monday indexing before retry...`);
+        await this.delay(delay);
+      }
+
+      const existingDeal = await this.findDealComprehensive(quoteId);
+      if (existingDeal) {
+        logger.info(
+          `Quote ${quoteId} found on attempt ${attempt}: "${existingDeal.name}" (${existingDeal.id})`
+        );
+        this.updateCache(quoteId, existingDeal);
+        return existingDeal;
+      }
+
+      logger.info(`Quote ${quoteId} not found on attempt ${attempt}`);
+    }
+
+    logger.info(
+      `Quote ${quoteId} confirmed not found after ${this.MAX_SEARCH_RETRIES} attempts`
+    );
+    return null;
+  }
+
+  // ✅ NEW: More comprehensive search strategy
+  private async findDealComprehensive(quoteId: number): Promise<any | null> {
+    try {
+      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
+      const simproIdStr = quoteId.toString();
+      const quotePattern = `Quote #${quoteId}`;
+
+      // Strategy 1: Search by SimPro ID column (most reliable)
+      const bySimProId = await this.searchBySimProId(boardId, simproIdStr);
+      if (bySimProId) {
+        logger.debug(`Found quote ${quoteId} by SimPro ID`);
+        return bySimProId;
+      }
+
+      // Strategy 2: Search by exact name pattern
+      const byName = await this.searchByNamePattern(boardId, quotePattern);
+      if (byName) {
+        logger.debug(`Found quote ${quoteId} by name pattern`);
+        return byName;
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`Error in comprehensive deal search for quote ${quoteId}`, {
+        error,
+      });
+      return null;
+    }
+  }
+
+  // ✅ NEW: Search by SimPro ID with pagination
+  private async searchBySimProId(
+    boardId: string,
+    simproIdStr: string
+  ): Promise<any | null> {
+    const query = `
+      query FindDealBySimProId($boardId: ID!, $cursor: String) {
+        boards(ids: [$boardId]) {
+          items_page(limit: 50, cursor: $cursor) {
+            cursor
+            items {
+              id
+              name
+              column_values(ids: ["text_mktzc7e6"]) {
+                id
+                text
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    let cursor: string | null = null;
+    let totalSearched = 0;
+
+    do {
+      const result = await this.syncService.mondayClient.query(query, {
+        boardId,
+        cursor,
+      });
+
+      const itemsPage = result.boards?.[0]?.items_page;
+      if (!itemsPage) break;
+
+      totalSearched += itemsPage.items.length;
+
+      for (const item of itemsPage.items) {
+        const simproIdColumn = item.column_values?.find(
+          (col: any) => col.id === "text_mktzc7e6"
+        );
+        if (simproIdColumn?.text === simproIdStr) {
+          logger.debug(
+            `Found by SimPro ID after searching ${totalSearched} items`
+          );
+          return item;
+        }
+      }
+
+      cursor = itemsPage.cursor;
+    } while (cursor);
+
+    return null;
+  }
+
+  // ✅ NEW: Search by name pattern
+  private async searchByNamePattern(
+    boardId: string,
+    quotePattern: string
+  ): Promise<any | null> {
+    const query = `
+      query FindDealByName($boardId: ID!) {
+        boards(ids: [$boardId]) {
+          items_page(limit: 100) {
+            items {
+              id
+              name
+            }
+          }
+        }
+      }
+    `;
+
+    const result = await this.syncService.mondayClient.query(query, {
+      boardId,
+    });
+    const items = result.boards?.[0]?.items_page?.items || [];
+
+    for (const item of items) {
+      if (item.name?.includes(quotePattern)) {
+        return item;
+      }
+    }
+
+    return null;
+  }
+
+  // ✅ NEW: Search in notes/description fields
+  private async searchByNotes(
+    boardId: string,
+    simproIdStr: string
+  ): Promise<any | null> {
+    const query = `
+      query FindDealByNotes($boardId: ID!) {
+        boards(ids: [$boardId]) {
+          items_page(limit: 100) {
+            items {
+              id
+              name
+              column_values(ids: ["text_mktq93t9"]) {
+                id
+                text
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const result = await this.syncService.mondayClient.query(query, {
+      boardId,
+    });
+    const items = result.boards?.[0]?.items_page?.items || [];
+
+    for (const item of items) {
+      const notesColumn = item.column_values?.find(
+        (col: any) => col.id === "text_mktq93t9"
+      );
+      if (notesColumn?.text?.includes(`SimPro Quote ID: ${simproIdStr}`)) {
+        return item;
+      }
+    }
+
+    return null;
+  }
+
+  // ✅ ENHANCED: Better duplicate webhook detection
+  private isDuplicateWebhook(eventType: string, quoteId: number): boolean {
+    const webhookKey = `${eventType}-${quoteId}`;
+    const now = Date.now();
+    const lastProcessed = this.processedWebhooks.get(webhookKey);
+
+    if (lastProcessed && now - lastProcessed < this.DEBOUNCE_WINDOW) {
+      const secondsAgo = Math.round((now - lastProcessed) / 1000);
+      logger.warn(
+        `🚫 DUPLICATE WEBHOOK BLOCKED: ${webhookKey} (processed ${secondsAgo}s ago)`
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  // ✅ NEW: Simple delay helper
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Keep all existing private methods unchanged...
+  private async findDealOptimized(quoteId: number): Promise<any | null> {
+    try {
+      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
+
+      const query = `
+        query FindDealOptimized($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 100) {
+              items {
+                id
+                name
+                column_values(ids: ["text_mktzc7e6"]) {
+                  id
+                  text
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const result = await this.syncService.mondayClient.query(query, {
+        boardId,
+      });
+      const items = result.boards?.[0]?.items_page?.items || [];
+
+      const simproIdStr = quoteId.toString();
+      const quotePattern = `Quote #${quoteId}`;
+
+      for (const item of items) {
+        const simproIdColumn = item.column_values?.find(
+          (col: any) => col.id === "text_mktzc7e6"
+        );
+        if (simproIdColumn?.text === simproIdStr) {
+          logger.debug(`Found quote ${quoteId} by SimPro ID`);
+          return item;
+        }
+
+        if (item.name?.includes(quotePattern)) {
+          logger.debug(`Found quote ${quoteId} by name pattern`);
+          return item;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`Error in optimized deal search for quote ${quoteId}`, {
+        error,
+      });
+      return null;
+    }
+  }
+
   private async handleQuoteDeleted(
     quoteId: number
   ): Promise<{ success: boolean; message: string }> {
     try {
       logger.info(`Processing quote deletion for quote ${quoteId}`);
 
-      // Check cache first
-      let existingDeal = this.getCachedItem(quoteId);
-
-      // If not in cache, do single optimized lookup
-      if (!existingDeal) {
-        existingDeal = await this.findDealOptimized(quoteId);
-      }
+      const existingDeal = await this.findExistingDealWithRetries(quoteId);
 
       if (!existingDeal) {
         logger.info(`Quote ${quoteId} not found in Monday - nothing to delete`);
@@ -292,7 +560,6 @@ export class WebhookService {
     basicQuote: any;
   }> {
     try {
-      // Single SimPro API call to get quote details
       const basicQuote = await this.syncService.getSimProQuoteDetails(
         companyId,
         quoteId
@@ -313,86 +580,12 @@ export class WebhookService {
       };
     } catch (error) {
       logger.error(`Failed to check quote ${quoteId} value`, { error });
-      // On error, assume it doesn't meet minimum to avoid unnecessary Monday API calls
       return {
         meetsMinimum: false,
         value: 0,
         basicQuote: null,
       };
     }
-  }
-
-  private async findDealOptimized(quoteId: number): Promise<any | null> {
-    try {
-      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
-
-      // ✅ FIXED: Use CORRECT column ID for deals
-      const query = `
-        query FindDealOptimized($boardId: ID!) {
-          boards(ids: [$boardId]) {
-            items_page(limit: 100) {
-              items {
-                id
-                name
-                column_values(ids: ["text_mktzc7e6"]) {
-                  id
-                  text
-                }
-              }
-            }
-          }
-        }
-      `;
-
-      const result = await this.syncService.mondayClient.query(query, {
-        boardId,
-      });
-      const items = result.boards?.[0]?.items_page?.items || [];
-
-      const simproIdStr = quoteId.toString();
-      const quotePattern = `Quote #${quoteId}`;
-
-      for (const item of items) {
-        // ✅ FIXED: Use CORRECT column ID for deals
-        const simproIdColumn = item.column_values?.find(
-          (col: any) => col.id === "text_mktzc7e6"
-        );
-        if (simproIdColumn?.text === simproIdStr) {
-          logger.debug(`Found quote ${quoteId} by SimPro ID`);
-          return item;
-        }
-
-        // Fallback check: name pattern
-        if (item.name?.includes(quotePattern)) {
-          logger.debug(`Found quote ${quoteId} by name pattern`);
-          return item;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      logger.error(`Error in optimized deal search for quote ${quoteId}`, {
-        error,
-      });
-      return null;
-    }
-  }
-
-  private isDuplicateWebhook(eventType: string, quoteId: number): boolean {
-    const webhookKey = `${eventType}-${quoteId}`;
-    const now = Date.now();
-    const lastProcessed = this.processedWebhooks.get(webhookKey);
-
-    if (lastProcessed && now - lastProcessed < this.DEBOUNCE_WINDOW) {
-      logger.warn(
-        `Duplicate webhook blocked: ${webhookKey} (processed ${Math.round(
-          (now - lastProcessed) / 1000
-        )}s ago)`
-      );
-      return true;
-    }
-
-    return false;
   }
 
   private markWebhookProcessed(eventType: string, quoteId: number): void {
@@ -506,7 +699,7 @@ export class WebhookService {
     await this.syncService.mondayClient.query(mutation, {
       itemId: dealId,
       boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      columnId: "deal_stage", // ✅ FIXED: Changed from "color_mktrw6k3" to "deal_stage"
+      columnId: "deal_stage",
       value: JSON.stringify({ label: mondayStatus }),
     });
   }
