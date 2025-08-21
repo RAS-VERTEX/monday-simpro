@@ -341,12 +341,12 @@ export class WebhookService {
     let totalSearched = 0;
 
     do {
-      const result = await this.syncService.mondayClient.query(query, {
+      const result: any = await this.syncService.mondayClient.query(query, {
         boardId,
         cursor,
       });
 
-      const itemsPage = result.boards?.[0]?.items_page;
+      const itemsPage: any = result.boards?.[0]?.items_page;
       if (!itemsPage) break;
 
       totalSearched += itemsPage.items.length;
@@ -387,52 +387,13 @@ export class WebhookService {
       }
     `;
 
-    const result = await this.syncService.mondayClient.query(query, {
+    const result: any = await this.syncService.mondayClient.query(query, {
       boardId,
     });
-    const items = result.boards?.[0]?.items_page?.items || [];
+    const items: any[] = result.boards?.[0]?.items_page?.items || [];
 
     for (const item of items) {
       if (item.name?.includes(quotePattern)) {
-        return item;
-      }
-    }
-
-    return null;
-  }
-
-  // ✅ NEW: Search in notes/description fields
-  private async searchByNotes(
-    boardId: string,
-    simproIdStr: string
-  ): Promise<any | null> {
-    const query = `
-      query FindDealByNotes($boardId: ID!) {
-        boards(ids: [$boardId]) {
-          items_page(limit: 100) {
-            items {
-              id
-              name
-              column_values(ids: ["text_mktq93t9"]) {
-                id
-                text
-              }
-            }
-          }
-        }
-      }
-    `;
-
-    const result = await this.syncService.mondayClient.query(query, {
-      boardId,
-    });
-    const items = result.boards?.[0]?.items_page?.items || [];
-
-    for (const item of items) {
-      const notesColumn = item.column_values?.find(
-        (col: any) => col.id === "text_mktq93t9"
-      );
-      if (notesColumn?.text?.includes(`SimPro Quote ID: ${simproIdStr}`)) {
         return item;
       }
     }
