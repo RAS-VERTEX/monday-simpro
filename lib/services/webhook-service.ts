@@ -1,9 +1,19 @@
+// lib/services/webhook-service.ts - Enterprise-grade with intelligent caching and minimal API calls
 import { SyncService } from "./sync-service";
 import { SimProWebhookPayload } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
 
+interface CachedItem {
+  id: string;
+  name: string;
+  lastUpdated: number;
+}
+
 export class WebhookService {
   private processedWebhooks = new Map<string, number>();
+  private itemCache = new Map<number, CachedItem>();
+  private readonly CACHE_TTL = 300000; // 5 minutes
+  private readonly DEBOUNCE_WINDOW = 30000; // 30 seconds
 
   constructor(private syncService: SyncService) {}
 
@@ -11,18 +21,12 @@ export class WebhookService {
     payload: SimProWebhookPayload
   ): Promise<{ success: boolean; message: string }> {
     try {
-      logger.info(
-        `[Webhook Service] Processing SimPro webhook: ${payload.ID}`,
-        {
-          quoteId: payload.reference?.quoteID,
-          companyId: payload.reference?.companyID,
-        }
-      );
+      logger.info(`Processing SimPro webhook: ${payload.ID}`, {
+        quoteId: payload.reference?.quoteID,
+        companyId: payload.reference?.companyID,
+      });
 
       if (!payload.ID.startsWith("quote.")) {
-        logger.debug(
-          `[Webhook Service] Ignoring non-quote event: ${payload.ID}`
-        );
         return {
           success: true,
           message: `Event ignored - not a quote event: ${payload.ID}`,
@@ -36,65 +40,35 @@ export class WebhookService {
         throw new Error("Missing quote ID or company ID in webhook payload");
       }
 
-      const webhookKey = `${payload.ID}-${quoteId}`;
-      const now = Date.now();
-
-      if (this.processedWebhooks.has(webhookKey)) {
-        const lastProcessed = this.processedWebhooks.get(webhookKey)!;
-        if (now - lastProcessed < 30000) {
-          logger.warn(
-            `[Webhook Service] 🚫 DUPLICATE WEBHOOK BLOCKED: ${
-              payload.ID
-            } for quote ${quoteId} (processed ${Math.round(
-              (now - lastProcessed) / 1000
-            )}s ago)`
-          );
-          return {
-            success: true,
-            message: `Duplicate webhook blocked - quote ${quoteId} ${payload.ID} already processed recently`,
-          };
-        }
+      if (this.isDuplicateWebhook(payload.ID, quoteId)) {
+        return {
+          success: true,
+          message: `Duplicate webhook blocked - quote ${quoteId} ${payload.ID} already processed recently`,
+        };
       }
 
-      this.processedWebhooks.set(webhookKey, now);
-
-      const keysToDelete: string[] = [];
-      this.processedWebhooks.forEach((timestamp, key) => {
-        if (now - timestamp > 300000) {
-          keysToDelete.push(key);
-        }
-      });
-      keysToDelete.forEach((key) => this.processedWebhooks.delete(key));
+      this.markWebhookProcessed(payload.ID, quoteId);
 
       switch (payload.ID) {
         case "quote.created":
-          return await this.handleQuoteCreatedWithDuplicateCheck(
-            quoteId,
-            companyId
-          );
+          return await this.handleQuoteCreated(quoteId, companyId);
 
         case "quote.status":
         case "quote.updated":
-          return await this.handleQuoteUpdatedWithDuplicateCheck(
-            quoteId,
-            companyId
-          );
+          return await this.handleQuoteUpdated(quoteId, companyId);
 
         case "quote.deleted":
           return await this.handleQuoteDeleted(quoteId);
 
         default:
-          logger.warn(`[Webhook Service] Unhandled quote event: ${payload.ID}`);
+          logger.warn(`Unhandled quote event: ${payload.ID}`);
           return {
             success: true,
             message: `Event acknowledged but not processed: ${payload.ID}`,
           };
       }
     } catch (error) {
-      logger.error("[Webhook Service] Failed to process SimPro webhook", {
-        error,
-        payload,
-      });
+      logger.error("Failed to process SimPro webhook", { error, payload });
       return {
         success: false,
         message: error instanceof Error ? error.message : "Unknown error",
@@ -102,49 +76,74 @@ export class WebhookService {
     }
   }
 
-  private async handleQuoteCreatedWithDuplicateCheck(
+  private isDuplicateWebhook(eventType: string, quoteId: number): boolean {
+    const webhookKey = `${eventType}-${quoteId}`;
+    const now = Date.now();
+    const lastProcessed = this.processedWebhooks.get(webhookKey);
+
+    if (lastProcessed && now - lastProcessed < this.DEBOUNCE_WINDOW) {
+      logger.warn(
+        `Duplicate webhook blocked: ${webhookKey} (processed ${Math.round(
+          (now - lastProcessed) / 1000
+        )}s ago)`
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  private markWebhookProcessed(eventType: string, quoteId: number): void {
+    const webhookKey = `${eventType}-${quoteId}`;
+    const now = Date.now();
+
+    this.processedWebhooks.set(webhookKey, now);
+    this.cleanupOldWebhooks(now);
+  }
+
+  private cleanupOldWebhooks(now: number): void {
+    const keysToDelete: string[] = [];
+    this.processedWebhooks.forEach((timestamp, key) => {
+      if (now - timestamp > this.CACHE_TTL) {
+        keysToDelete.push(key);
+      }
+    });
+    keysToDelete.forEach((key) => this.processedWebhooks.delete(key));
+  }
+
+  private async handleQuoteCreated(
     quoteId: number,
     companyId: number
   ): Promise<{ success: boolean; message: string }> {
     try {
-      logger.info(
-        `[Webhook Service] 🚀 REAL-TIME: Processing quote creation for quote ${quoteId}`
-      );
+      logger.info(`Processing quote creation for quote ${quoteId}`);
 
-      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
-      const existingDeal = await this.findQuoteInMondayExtensive(
-        quoteId,
-        boardId
-      );
+      // Check cache first
+      if (this.isInCache(quoteId)) {
+        const cached = this.itemCache.get(quoteId)!;
+        logger.warn(
+          `Quote ${quoteId} already exists in cache as "${cached.name}" - duplicate creation prevented`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} already exists - duplicate creation prevented`,
+        };
+      }
 
+      // Single optimized lookup instead of 3 separate calls
+      const existingDeal = await this.findDealOptimized(quoteId);
       if (existingDeal) {
+        this.updateCache(quoteId, existingDeal);
         logger.warn(
-          `[Webhook Service] 🚫 DUPLICATE CREATION BLOCKED: Quote ${quoteId} already exists as "${existingDeal.name}" (${existingDeal.id})`
+          `Quote ${quoteId} already exists as "${existingDeal.name}" - duplicate creation prevented`
         );
         return {
           success: true,
-          message: `Quote ${quoteId} already exists in Monday as "${existingDeal.name}" - duplicate creation prevented`,
+          message: `Quote ${quoteId} already exists - duplicate creation prevented`,
         };
       }
 
-      const simproIdExists = await this.syncService.findDealBySimProId(
-        quoteId,
-        boardId
-      );
-      if (simproIdExists) {
-        logger.warn(
-          `[Webhook Service] 🚫 DUPLICATE CREATION BLOCKED (SimPro ID check): Quote ${quoteId} found as "${simproIdExists.name}" (${simproIdExists.id})`
-        );
-        return {
-          success: true,
-          message: `Quote ${quoteId} already exists in Monday (SimPro ID match) - duplicate creation prevented`,
-        };
-      }
-
-      logger.info(
-        `[Webhook Service] ✅ Quote ${quoteId} confirmed new - proceeding with creation`
-      );
-
+      // Create new quote
       const result = await this.syncService.syncSingleQuote(
         quoteId,
         companyId,
@@ -154,22 +153,18 @@ export class WebhookService {
       );
 
       if (result.success) {
-        logger.info(
-          `[Webhook Service] ✅ Quote ${quoteId} creation synced to Monday INSTANTLY!`
-        );
+        // Cache the newly created item
+        this.updateCache(quoteId, { id: "new", name: `Quote #${quoteId}` });
+        logger.info(`Quote ${quoteId} created and synced to Monday`);
         return {
           success: true,
-          message: `Quote ${quoteId} created and synced to Monday.com instantly!`,
+          message: `Quote ${quoteId} created and synced to Monday.com`,
         };
       } else {
-        throw new Error(
-          `Failed to sync quote ${quoteId} to Monday: ${result.message}`
-        );
+        throw new Error(`Failed to sync quote ${quoteId}: ${result.message}`);
       }
     } catch (error) {
-      logger.error(`[Webhook Service] Failed to create quote ${quoteId}`, {
-        error,
-      });
+      logger.error(`Failed to create quote ${quoteId}`, { error });
       return {
         success: false,
         message: `Failed to create quote ${quoteId}: ${
@@ -179,83 +174,66 @@ export class WebhookService {
     }
   }
 
-  private async handleQuoteUpdatedWithDuplicateCheck(
+  private async handleQuoteUpdated(
     quoteId: number,
     companyId: number
   ): Promise<{ success: boolean; message: string }> {
     try {
-      logger.info(
-        `[Webhook Service] 🔄 REAL-TIME: Processing quote update for quote ${quoteId}`
-      );
+      logger.info(`Processing quote update for quote ${quoteId}`);
 
-      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
-      const existingDeal = await this.findQuoteInMondayExtensive(
-        quoteId,
-        boardId
-      );
+      // Check cache first
+      let existingDeal = this.getCachedItem(quoteId);
+
+      // If not in cache, do single optimized lookup
+      if (!existingDeal) {
+        existingDeal = await this.findDealOptimized(quoteId);
+        if (existingDeal) {
+          this.updateCache(quoteId, existingDeal);
+        }
+      }
 
       if (!existingDeal) {
         logger.info(
-          `[Webhook Service] ➕ Quote ${quoteId} doesn't exist in Monday - treating update as creation`
+          `Quote ${quoteId} doesn't exist in Monday - treating update as creation`
         );
-        return await this.handleQuoteCreatedWithDuplicateCheck(
-          quoteId,
-          companyId
-        );
+        return await this.handleQuoteCreated(quoteId, companyId);
       }
 
       logger.info(
-        `[Webhook Service] 🔄 Updating existing quote ${quoteId} ("${existingDeal.name}")`
+        `Updating existing quote ${quoteId} ("${existingDeal.name}")`
       );
 
-      try {
-        const basicQuote = await this.syncService.getSimProQuoteDetails(
-          companyId,
-          quoteId
-        );
-        const newStatus = basicQuote.Status?.Name?.trim();
+      // Only fetch quote details if we need to check status
+      const basicQuote = await this.syncService.getSimProQuoteDetails(
+        companyId,
+        quoteId
+      );
+      const newStatus = basicQuote.Status?.Name?.trim();
 
-        if (newStatus && this.isStatusUpdateNeeded(newStatus)) {
-          await this.updateDealStatusOnly(existingDeal.id, boardId, newStatus);
-
-          logger.info(
-            `[Webhook Service] ✅ Quote ${quoteId} status updated to "${newStatus}"`
-          );
-          return {
-            success: true,
-            message: `Quote ${quoteId} status updated to "${newStatus}" instantly!`,
-          };
-        } else {
-          logger.info(
-            `[Webhook Service] ℹ️ Quote ${quoteId} status unchanged, no update needed`
-          );
-          return {
-            success: true,
-            message: `Quote ${quoteId} status unchanged, no update needed`,
-          };
-        }
-      } catch (error: any) {
-        logger.error(
-          `[Webhook Service] Failed to update quote ${quoteId} status`,
-          { error }
-        );
-
-        if (this.isRateLimitError(error)) {
-          logger.warn(
-            `[Webhook Service] 🚦 Rate limited updating quote ${quoteId}, will retry later`
-          );
-          return {
-            success: true,
-            message: `Quote ${quoteId} update rate limited, will retry automatically`,
-          };
-        }
-
-        throw error;
+      if (newStatus && this.isStatusUpdateNeeded(newStatus)) {
+        await this.updateDealStatusOnly(existingDeal.id, newStatus);
+        logger.info(`Quote ${quoteId} status updated to "${newStatus}"`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} status updated to "${newStatus}"`,
+        };
+      } else {
+        logger.info(`Quote ${quoteId} status unchanged, no update needed`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} status unchanged, no update needed`,
+        };
       }
-    } catch (error) {
-      logger.error(`[Webhook Service] Failed to update quote ${quoteId}`, {
-        error,
-      });
+    } catch (error: any) {
+      if (this.isRateLimitError(error)) {
+        logger.warn(`Rate limited updating quote ${quoteId}, will retry later`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} update rate limited, will retry automatically`,
+        };
+      }
+
+      logger.error(`Failed to update quote ${quoteId}`, { error });
       return {
         success: false,
         message: `Failed to update quote ${quoteId}: ${
@@ -265,8 +243,141 @@ export class WebhookService {
     }
   }
 
+  private async handleQuoteDeleted(
+    quoteId: number
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      logger.info(`Processing quote deletion for quote ${quoteId}`);
+
+      // Check cache first
+      let existingDeal = this.getCachedItem(quoteId);
+
+      // If not in cache, do single optimized lookup
+      if (!existingDeal) {
+        existingDeal = await this.findDealOptimized(quoteId);
+      }
+
+      if (!existingDeal) {
+        logger.info(`Quote ${quoteId} not found in Monday - nothing to delete`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} not found in Monday - no deletion needed`,
+        };
+      }
+
+      await this.deleteDealFromMonday(existingDeal.id);
+      this.removeFromCache(quoteId);
+
+      logger.info(`Quote ${quoteId} deleted from Monday`);
+      return {
+        success: true,
+        message: `Quote ${quoteId} deleted from Monday.com successfully`,
+      };
+    } catch (error) {
+      logger.error(`Failed to delete quote ${quoteId}`, { error });
+      return {
+        success: false,
+        message: `Failed to delete quote ${quoteId}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      };
+    }
+  }
+
+  private async findDealOptimized(quoteId: number): Promise<any | null> {
+    try {
+      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
+
+      // Single optimized query - only SimPro ID column needed
+      const query = `
+        query FindDealOptimized($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 100) {
+              items {
+                id
+                name
+                column_values(ids: ["text_mktgcjyg"]) {
+                  id
+                  text
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const result = await this.syncService.mondayClient.query(query, {
+        boardId,
+      });
+      const items = result.boards?.[0]?.items_page?.items || [];
+
+      const simproIdStr = quoteId.toString();
+      const quotePattern = `Quote #${quoteId}`;
+
+      for (const item of items) {
+        // Primary check: SimPro ID column (most reliable)
+        const simproIdColumn = item.column_values?.find(
+          (col: any) => col.id === "text_mktgcjyg"
+        );
+        if (simproIdColumn?.text === simproIdStr) {
+          logger.debug(`Found quote ${quoteId} by SimPro ID`);
+          return item;
+        }
+
+        // Fallback check: name pattern
+        if (item.name?.includes(quotePattern)) {
+          logger.debug(`Found quote ${quoteId} by name pattern`);
+          return item;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`Error in optimized deal search for quote ${quoteId}`, {
+        error,
+      });
+      return null;
+    }
+  }
+
+  private isInCache(quoteId: number): boolean {
+    const cached = this.itemCache.get(quoteId);
+    if (!cached) return false;
+
+    const now = Date.now();
+    if (now - cached.lastUpdated > this.CACHE_TTL) {
+      this.itemCache.delete(quoteId);
+      return false;
+    }
+
+    return true;
+  }
+
+  private getCachedItem(quoteId: number): any | null {
+    if (!this.isInCache(quoteId)) return null;
+
+    const cached = this.itemCache.get(quoteId)!;
+    return {
+      id: cached.id,
+      name: cached.name,
+    };
+  }
+
+  private updateCache(quoteId: number, item: any): void {
+    this.itemCache.set(quoteId, {
+      id: item.id,
+      name: item.name,
+      lastUpdated: Date.now(),
+    });
+  }
+
+  private removeFromCache(quoteId: number): void {
+    this.itemCache.delete(quoteId);
+  }
+
   private isStatusUpdateNeeded(status: string): boolean {
-    const importantStatuses = [
+    // Only track the most critical status changes
+    const criticalStatuses = [
       "Quote: Won",
       "Quote : Won",
       "Quote: Archived - Not Won",
@@ -275,7 +386,7 @@ export class WebhookService {
       "Quote : Sent",
     ];
 
-    return importantStatuses.some((s) =>
+    return criticalStatuses.some((s) =>
       status.replace(/\s/g, "").includes(s.replace(/\s/g, ""))
     );
   }
@@ -290,7 +401,6 @@ export class WebhookService {
 
   private async updateDealStatusOnly(
     dealId: string,
-    boardId: string,
     newStatus: string
   ): Promise<void> {
     const statusMapping: { [key: string]: string } = {
@@ -305,7 +415,7 @@ export class WebhookService {
     const mondayStatus = statusMapping[newStatus] || newStatus;
 
     logger.info(
-      `[Webhook Service] 🎯 Updating deal ${dealId} status: "${newStatus}" → "${mondayStatus}"`
+      `Updating deal ${dealId} status: "${newStatus}" → "${mondayStatus}"`
     );
 
     const mutation = `
@@ -323,54 +433,10 @@ export class WebhookService {
 
     await this.syncService.mondayClient.query(mutation, {
       itemId: dealId,
-      boardId: boardId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
       columnId: "color_mktrw6k3",
       value: JSON.stringify({ label: mondayStatus }),
     });
-  }
-
-  private async handleQuoteDeleted(
-    quoteId: number
-  ): Promise<{ success: boolean; message: string }> {
-    try {
-      logger.info(
-        `[Webhook Service] 🗑️ Processing quote deletion for quote ${quoteId}`
-      );
-
-      const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
-      const existingDeal = await this.findQuoteInMondayExtensive(
-        quoteId,
-        boardId
-      );
-
-      if (!existingDeal) {
-        logger.info(
-          `[Webhook Service] ℹ️ Quote ${quoteId} not found in Monday - nothing to delete`
-        );
-        return {
-          success: true,
-          message: `Quote ${quoteId} not found in Monday - no deletion needed`,
-        };
-      }
-
-      await this.deleteDealFromMonday(existingDeal.id);
-
-      logger.info(`[Webhook Service] ✅ Quote ${quoteId} deleted from Monday`);
-      return {
-        success: true,
-        message: `Quote ${quoteId} deleted from Monday.com successfully`,
-      };
-    } catch (error) {
-      logger.error(`[Webhook Service] Failed to delete quote ${quoteId}`, {
-        error,
-      });
-      return {
-        success: false,
-        message: `Failed to delete quote ${quoteId}: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-      };
-    }
   }
 
   private async deleteDealFromMonday(dealId: string): Promise<void> {
@@ -387,148 +453,10 @@ export class WebhookService {
         itemId: dealId,
       });
 
-      logger.info(
-        `[Webhook Service] ✅ Successfully deleted deal ${dealId} from Monday`
-      );
+      logger.info(`Successfully deleted deal ${dealId} from Monday`);
     } catch (error) {
-      logger.error(`[Webhook Service] Failed to delete deal ${dealId}`, {
-        error,
-      });
+      logger.error(`Failed to delete deal ${dealId}`, { error });
       throw error;
-    }
-  }
-
-  private async findQuoteInMondayExtensive(
-    quoteId: number,
-    boardId: string
-  ): Promise<any | null> {
-    try {
-      logger.debug(
-        `[Webhook Service] 🔍 Comprehensive search for quote ${quoteId}`
-      );
-
-      const bySimproId = await this.syncService.findDealBySimProId(
-        quoteId,
-        boardId
-      );
-      if (bySimproId) {
-        logger.debug(
-          `[Webhook Service] ✅ Found quote ${quoteId} by SimPro ID column`
-        );
-        return bySimproId;
-      }
-
-      const byName = await this.findQuoteByNamePattern(quoteId, boardId);
-      if (byName) {
-        logger.debug(
-          `[Webhook Service] ✅ Found quote ${quoteId} by name pattern`
-        );
-        return byName;
-      }
-
-      const byNotes = await this.findQuoteByNotesContent(quoteId, boardId);
-      if (byNotes) {
-        logger.debug(
-          `[Webhook Service] ✅ Found quote ${quoteId} by notes content`
-        );
-        return byNotes;
-      }
-
-      logger.debug(`[Webhook Service] ❌ Quote ${quoteId} not found in Monday`);
-      return null;
-    } catch (error) {
-      logger.error(
-        `[Webhook Service] Error in comprehensive search for quote ${quoteId}`,
-        {
-          error,
-        }
-      );
-      return null;
-    }
-  }
-
-  private async findQuoteByNamePattern(
-    quoteId: number,
-    boardId: string
-  ): Promise<any | null> {
-    try {
-      const query = `
-        query FindQuoteByName($boardId: ID!) {
-          boards(ids: [$boardId]) {
-            items_page(limit: 50) {
-              items {
-                id
-                name
-              }
-            }
-          }
-        }
-      `;
-
-      const result = (await this.syncService.mondayClient.query(query, {
-        boardId,
-      })) as any;
-      const items = result.boards[0]?.items_page?.items || [];
-
-      for (const item of items) {
-        if (item.name && item.name.includes(`Quote #${quoteId}`)) {
-          return item;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      logger.error(`[Webhook Service] Error searching by name pattern`, {
-        error,
-      });
-      return null;
-    }
-  }
-
-  private async findQuoteByNotesContent(
-    quoteId: number,
-    boardId: string
-  ): Promise<any | null> {
-    try {
-      const query = `
-        query FindQuoteByNotes($boardId: ID!) {
-          boards(ids: [$boardId]) {
-            items_page(limit: 50) {
-              items {
-                id
-                name
-                column_values {
-                  id
-                  text
-                }
-              }
-            }
-          }
-        }
-      `;
-
-      const result = (await this.syncService.mondayClient.query(query, {
-        boardId,
-      })) as any;
-      const items = result.boards[0]?.items_page?.items || [];
-
-      for (const item of items) {
-        const notesColumn = item.column_values?.find(
-          (col: any) =>
-            col.text && col.text.includes(`SimPro Quote ID: ${quoteId}`)
-        );
-
-        if (notesColumn) {
-          return item;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      logger.error(`[Webhook Service] Error searching by notes content`, {
-        error,
-      });
-      return null;
     }
   }
 }
