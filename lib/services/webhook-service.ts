@@ -1,3 +1,4 @@
+// lib/services/webhook-service.ts
 import { SyncService } from "./sync-service";
 import { SimProWebhookPayload } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -505,7 +506,7 @@ export class WebhookService {
     await this.syncService.mondayClient.query(mutation, {
       itemId: dealId,
       boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      columnId: "color_mktrw6k3",
+      columnId: "deal_stage", // ✅ FIXED: Changed from "color_mktrw6k3" to "deal_stage"
       value: JSON.stringify({ label: mondayStatus }),
     });
   }
