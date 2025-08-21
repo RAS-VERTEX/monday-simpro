@@ -1,4 +1,3 @@
-// lib/services/sync-service.ts - COMPLETE VERSION with unified contact enhancement fix
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
@@ -24,7 +23,6 @@ export interface SyncResult {
     errors: number;
   };
   errors?: string[];
-  debugInfo?: any;
 }
 
 export class SyncService {
@@ -83,23 +81,19 @@ export class SyncService {
         );
 
         if (notesColumn) {
-          logger.info(
-            `[Sync Service] Found deal by SimPro ID: ${item.name} (${item.id})`
-          );
+          logger.info(`Found deal by SimPro ID: ${item.name} (${item.id})`);
           return item;
         }
 
         if (item.name.includes(`Quote #${simproQuoteId}`)) {
-          logger.info(
-            `[Sync Service] Found deal by name pattern: ${item.name} (${item.id})`
-          );
+          logger.info(`Found deal by name pattern: ${item.name} (${item.id})`);
           return item;
         }
       }
 
       return null;
     } catch (error) {
-      logger.error("[Sync Service] Error finding deal by SimPro ID", {
+      logger.error("Error finding deal by SimPro ID", {
         error,
         simproQuoteId,
         boardId,
@@ -134,7 +128,7 @@ export class SyncService {
       };
     } catch (error) {
       const responseTime = Date.now() - startTime;
-      logger.error("[Sync Service] Health check failed", { error });
+      logger.error("Health check failed", { error });
 
       return {
         simpro: { status: "down", lastCheck: timestamp },
@@ -149,9 +143,7 @@ export class SyncService {
     config: { minimumQuoteValue: number }
   ): Promise<{ success: boolean; message: string }> {
     try {
-      logger.info(
-        `[Sync Service] 🚀 WEBHOOK: Processing single quote ${quoteId}`
-      );
+      logger.info(`Processing single quote ${quoteId}`);
 
       const basicQuote = await this.simproQuotes.getQuoteDetails(
         companyId,
@@ -218,17 +210,10 @@ export class SyncService {
         };
       }
 
-      logger.info(
-        `[Sync Service] ✅ Quote ${quoteId} passes validation - syncing to Monday`
-      );
+      logger.info(`Quote ${quoteId} passes validation, syncing to Monday`);
 
-      console.log(
-        `🔧 [CONTACT FIX] Enhancing quote ${quoteId} with contact details...`
-      );
-
-      // ✅ FIX: Use the SAME enhancement method as batch sync (working version)
       const enhancedQuotes = await this.simproQuotes.enhanceQuotesWithDetails(
-        [basicQuote], // Pass as single-item array to use the working batch method
+        [basicQuote],
         companyId
       );
 
@@ -239,15 +224,6 @@ export class SyncService {
       }
 
       const enhancedQuote = enhancedQuotes[0];
-
-      console.log(
-        `✅ [CONTACT FIX] Enhanced quote ${quoteId} - Contact details:`,
-        {
-          CustomerContactDetails: enhancedQuote.CustomerContactDetails,
-          SiteContactDetails: enhancedQuote.SiteContactDetails,
-        }
-      );
-
       const mappedData = this.mappingService.mapQuoteToMonday(enhancedQuote);
 
       const metrics = {
@@ -261,19 +237,17 @@ export class SyncService {
 
       await this.processMappedQuote(quoteId, mappedData, metrics);
 
-      logger.info(`[Sync Service] 🎉 Quote ${quoteId} webhook sync complete!`);
+      logger.info(`Quote ${quoteId} sync complete`);
       logger.info(
-        `[Sync Service] 📊 Summary: Accounts(${metrics.accountsCreated}), Contacts(${metrics.contactsCreated}), Deals(${metrics.dealsCreated})`
+        `Summary: Accounts(${metrics.accountsCreated}), Contacts(${metrics.contactsCreated}), Deals(${metrics.dealsCreated})`
       );
 
       return {
         success: true,
-        message: `Quote ${quoteId} successfully synced via webhook: "${mappedData.deal.dealName}"`,
+        message: `Quote ${quoteId} successfully synced: "${mappedData.deal.dealName}"`,
       };
     } catch (error) {
-      logger.error(`[Sync Service] ❌ Failed to sync single quote ${quoteId}`, {
-        error,
-      });
+      logger.error(`Failed to sync single quote ${quoteId}`, { error });
       return {
         success: false,
         message: error instanceof Error ? error.message : "Unknown error",
@@ -281,91 +255,12 @@ export class SyncService {
     }
   }
 
-  async syncSimProToMonday(
-    config: SyncConfig,
-    limit?: number
-  ): Promise<SyncResult> {
-    const errors: string[] = [];
-    let metrics = {
-      quotesProcessed: 0,
-      accountsCreated: 0,
-      contactsCreated: 0,
-      dealsCreated: 0,
-      relationshipsLinked: 0,
-      errors: 0,
-    };
-
-    try {
-      logger.info("[Sync Service] Starting BATCH sync", {
-        minimumValue: config.minimumQuoteValue,
-        limit,
-      });
-
-      const allValidQuotes = await this.simproQuotes.getActiveHighValueQuotes(
-        config.minimumQuoteValue
-      );
-
-      if (allValidQuotes.length === 0) {
-        return {
-          success: true,
-          message: "No high-value quotes found to sync",
-          timestamp: new Date().toISOString(),
-          metrics,
-        };
-      }
-
-      const quotesToProcess = limit
-        ? allValidQuotes.slice(0, limit)
-        : allValidQuotes;
-
-      for (const quote of quotesToProcess) {
-        try {
-          const mappedData = this.mappingService.mapQuoteToMonday(quote);
-          await this.processMappedQuote(quote.ID, mappedData, metrics);
-          metrics.quotesProcessed++;
-        } catch (error) {
-          const errorMsg = `Failed to sync quote ${quote.ID}: ${
-            error instanceof Error ? error.message : "Unknown error"
-          }`;
-          logger.error(errorMsg, { error });
-          errors.push(errorMsg);
-          metrics.errors++;
-        }
-      }
-
-      const success = errors.length === 0;
-      const message = success
-        ? `Successfully synced ${metrics.quotesProcessed} quotes`
-        : `Completed with ${metrics.errors} errors out of ${metrics.quotesProcessed} quotes`;
-
-      return {
-        success,
-        message,
-        timestamp: new Date().toISOString(),
-        metrics,
-        errors: errors.length > 0 ? errors : undefined,
-      };
-    } catch (error) {
-      logger.error("[Sync Service] Critical sync error", { error });
-      return {
-        success: false,
-        message: error instanceof Error ? error.message : "Unknown sync error",
-        timestamp: new Date().toISOString(),
-        metrics,
-        errors: [error instanceof Error ? error.message : "Critical failure"],
-      };
-    }
-  }
-
-  // ✅ ORIGINAL LOGIC - ONLY ADDED deal-to-account linking
   private async processMappedQuote(
     quoteId: number,
     mappedData: any,
     metrics: any
   ): Promise<void> {
-    logger.info(
-      `[Sync Service] 🏢 Processing account: ${mappedData.account.accountName}`
-    );
+    logger.info(`Processing account: ${mappedData.account.accountName}`);
 
     const accountResult = await this.mondayApi.createAccount(
       process.env.MONDAY_ACCOUNTS_BOARD_ID!,
@@ -377,19 +272,13 @@ export class SyncService {
     }
 
     const accountId = accountResult.itemId;
-    // ✅ ORIGINAL LOGIC: Check if it's actually a new account
     if (accountResult.itemId && !accountResult.itemId.includes("existing")) {
       metrics.accountsCreated++;
     }
-    logger.info(
-      `[Sync Service] ✅ Using existing account: ${mappedData.account.accountName}`
-    );
 
     const contactIds: string[] = [];
     for (const contactData of mappedData.contacts) {
-      logger.info(
-        `[Sync Service] 👤 Processing contact: ${contactData.contactName}`
-      );
+      logger.info(`Processing contact: ${contactData.contactName}`);
 
       const contactResult = await this.mondayApi.createContact(
         process.env.MONDAY_CONTACTS_BOARD_ID!,
@@ -400,28 +289,18 @@ export class SyncService {
         contactIds.push(contactResult.itemId);
         metrics.contactsCreated++;
 
-        // ORIGINAL: Link contact to account using board_relation column
         try {
           await this.linkContactToAccount(contactResult.itemId, accountId);
-          logger.info(
-            `[Sync Service] 🔗 Linked contact ${contactResult.itemId} to account ${accountId}`
-          );
           metrics.relationshipsLinked++;
         } catch (linkError) {
-          logger.warn(
-            `[Sync Service] ⚠️ Failed to link contact to account: ${linkError}`
-          );
+          logger.warn(`Failed to link contact to account: ${linkError}`);
         }
       } else {
-        logger.warn(
-          `[Sync Service] ⚠️ Failed to create contact: ${contactResult.error}`
-        );
+        logger.warn(`Failed to create contact: ${contactResult.error}`);
       }
     }
 
-    logger.info(
-      `[Sync Service] 💼 Processing deal: ${mappedData.deal.dealName}`
-    );
+    logger.info(`Processing deal: ${mappedData.deal.dealName}`);
 
     const dealResult = await this.mondayApi.createDeal(
       process.env.MONDAY_DEALS_BOARD_ID!,
@@ -434,55 +313,33 @@ export class SyncService {
 
     const dealId = dealResult.itemId;
     metrics.dealsCreated++;
-    logger.info(
-      `[Sync Service] ✅ Deal processed: ${mappedData.deal.dealName} (${dealId})`
-    );
 
-    // ✅ ADD: Deal → Account linking (THIS WAS MISSING!)
     try {
       await this.linkDealToAccount(dealId, accountId);
-      logger.info(
-        `[Sync Service] 🔗 Linked deal ${dealId} to account ${accountId}`
-      );
       metrics.relationshipsLinked++;
     } catch (linkError) {
-      logger.warn(
-        `[Sync Service] ⚠️ Failed to link deal to account: ${linkError}`
-      );
+      logger.warn(`Failed to link deal to account: ${linkError}`);
     }
 
-    // ORIGINAL: Link deal to contacts using board_relation column
     if (contactIds.length > 0) {
       try {
         await this.linkDealToContacts(dealId, contactIds);
-        logger.info(
-          `[Sync Service] 🔗 Linked deal ${dealId} to ${contactIds.length} contacts`
-        );
         metrics.relationshipsLinked++;
       } catch (linkError) {
-        logger.warn(
-          `[Sync Service] ⚠️ Failed to link deal to contacts: ${linkError}`
-        );
+        logger.warn(`Failed to link deal to contacts: ${linkError}`);
       }
     }
 
-    // ORIGINAL: Create bidirectional contact-deal relationships
     for (const contactId of contactIds) {
       try {
         await this.linkContactToDeal(contactId, dealId);
-        logger.info(
-          `[Sync Service] 🔗 Linked contact ${contactId} to deal ${dealId}`
-        );
         metrics.relationshipsLinked++;
       } catch (linkError) {
-        logger.warn(
-          `[Sync Service] ⚠️ Failed to link contact to deal: ${linkError}`
-        );
+        logger.warn(`Failed to link contact to deal: ${linkError}`);
       }
     }
   }
 
-  // ORIGINAL: Only use board_relation columns, not mirror columns
   private async linkContactToAccount(
     contactId: string,
     accountId: string
@@ -500,7 +357,6 @@ export class SyncService {
       }
     `;
 
-    // ✅ CORRECT: contact_account is "board_relation" type - can write
     await this.mondayApi.query(mutation, {
       itemId: contactId,
       boardId: process.env.MONDAY_CONTACTS_BOARD_ID!,
@@ -509,7 +365,6 @@ export class SyncService {
     });
   }
 
-  // ✅ NEW: Deal → Account linking (THIS WAS MISSING!)
   private async linkDealToAccount(
     dealId: string,
     accountId: string
@@ -535,7 +390,6 @@ export class SyncService {
     });
   }
 
-  // ORIGINAL: Deal → Contacts linking
   private async linkDealToContacts(
     dealId: string,
     contactIds: string[]
@@ -563,7 +417,6 @@ export class SyncService {
     });
   }
 
-  // ORIGINAL: Contact → Deal linking
   private async linkContactToDeal(
     contactId: string,
     dealId: string
@@ -588,7 +441,4 @@ export class SyncService {
       value: JSON.stringify({ item_ids: [parseInt(dealId)] }),
     });
   }
-
-  // ✅ REMOVED: The broken enhanceSingleQuoteWithDetails, fetchCustomerDetails, and fetchContactDetails methods
-  // They had wrong API endpoints and are now replaced by the working versions in SimProQuotes class
 }
