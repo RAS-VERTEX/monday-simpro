@@ -1,4 +1,3 @@
-// lib/services/webhook-service.ts - Price-first validation to prevent wasted Monday API calls
 import { SyncService } from "./sync-service";
 import { SimProWebhookPayload } from "@/types/simpro";
 import { logger } from "@/lib/utils/logger";
@@ -326,7 +325,7 @@ export class WebhookService {
     try {
       const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
 
-      // Single optimized query - only SimPro ID column needed
+      // ✅ FIXED: Use CORRECT column ID for deals
       const query = `
         query FindDealOptimized($boardId: ID!) {
           boards(ids: [$boardId]) {
@@ -334,7 +333,7 @@ export class WebhookService {
               items {
                 id
                 name
-                column_values(ids: ["text_mktgcjyg"]) {
+                column_values(ids: ["text_mktzc7e6"]) {
                   id
                   text
                 }
@@ -353,9 +352,9 @@ export class WebhookService {
       const quotePattern = `Quote #${quoteId}`;
 
       for (const item of items) {
-        // Primary check: SimPro ID column (most reliable)
+        // ✅ FIXED: Use CORRECT column ID for deals
         const simproIdColumn = item.column_values?.find(
-          (col: any) => col.id === "text_mktgcjyg"
+          (col: any) => col.id === "text_mktzc7e6"
         );
         if (simproIdColumn?.text === simproIdStr) {
           logger.debug(`Found quote ${quoteId} by SimPro ID`);
