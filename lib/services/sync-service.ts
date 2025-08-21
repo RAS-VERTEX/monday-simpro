@@ -1,7 +1,16 @@
+// lib/services/sync-service.ts - Complete fixed version using enhanced Monday services
 import { SimProApi } from "@/lib/clients/simpro/simpro-api";
 import { SimProQuotes } from "@/lib/clients/simpro/simpro-quotes";
 import { MondayClient } from "@/lib/monday-client";
-import { MondayBoardConfig } from "@/lib/clients/monday/monday-config";
+import { MondayApi } from "@/lib/clients/monday/monday-api";
+import { MondayAccounts } from "@/lib/clients/monday/monday-accounts";
+import { MondayContacts } from "@/lib/clients/monday/monday-contacts";
+import { MondayDeals } from "@/lib/clients/monday/monday-deals";
+import {
+  MondayBoardConfig,
+  MondayColumnIds,
+  MONDAY_COLUMN_IDS,
+} from "@/lib/clients/monday/monday-config";
 import { MappingService } from "./mapping-service";
 import { logger } from "@/lib/utils/logger";
 
@@ -28,7 +37,15 @@ export interface SyncResult {
 export class SyncService {
   private simproApi: SimProApi;
   private simproQuotes: SimProQuotes;
-  private mondayApi: MondayClient;
+  private mondayApi: MondayClient; // Keep for backward compatibility and queries
+
+  // ✅ NEW: Enhanced Monday services with proper duplicate detection
+  private mondayApiClient: MondayApi;
+  private mondayAccounts: MondayAccounts;
+  private mondayContacts: MondayContacts;
+  private mondayDeals: MondayDeals;
+  private columnIds: MondayColumnIds;
+
   private mappingService: MappingService;
 
   constructor(
@@ -37,7 +54,21 @@ export class SyncService {
   ) {
     this.simproApi = new SimProApi(simproConfig);
     this.simproQuotes = new SimProQuotes(this.simproApi);
-    this.mondayApi = new MondayClient({ apiToken: mondayConfig.apiToken });
+    this.mondayApi = new MondayClient({ apiToken: mondayConfig.apiToken }); // Keep for queries
+
+    // ✅ NEW: Initialize enhanced services with proper duplicate detection
+    this.mondayApiClient = new MondayApi(mondayConfig.apiToken);
+    this.columnIds = MONDAY_COLUMN_IDS;
+    this.mondayAccounts = new MondayAccounts(
+      this.mondayApiClient,
+      this.columnIds
+    );
+    this.mondayContacts = new MondayContacts(
+      this.mondayApiClient,
+      this.columnIds
+    );
+    this.mondayDeals = new MondayDeals(this.mondayApiClient, this.columnIds);
+
     this.mappingService = new MappingService();
   }
 
@@ -170,64 +201,22 @@ export class SyncService {
         };
       }
 
-      const validStatuses = [
-        "Quote: To Be Assigned",
-        "Quote: To Be Scheduled",
-        "Quote : To Be Scheduled",
-        "Quote: To Write",
-        "Quote: Visit Scheduled",
-        "Quote : Visit Scheduled",
-        "Quote: In Progress",
-        "Quote : In Progress",
-        "Quote: Won",
-        "Quote : Won",
-        "Quote: On Hold",
-        "Quote : On Hold",
-        "Quote: Sent",
-        "Quote : Sent",
-        "Quote : Sent ",
-        "Quote: Due Date Reached",
-        "Quote : Due Date Reached",
-        "Quote: Archived - Not Won",
-        "Quote : Archived - Not Won",
-        "Quote: Archived - Won",
-        "Quote : Archived - Won",
-      ];
-
-      const statusName = basicQuote.Status?.Name?.trim();
-      if (!statusName || !validStatuses.includes(statusName)) {
-        return {
-          success: false,
-          message: `Quote ${quoteId} status "${statusName}" is not valid for sync`,
-        };
-      }
-
-      const isArchivedQuote = statusName?.includes("Archived");
-      if (!isArchivedQuote && basicQuote.IsClosed === true) {
-        return {
-          success: false,
-          message: `Quote ${quoteId} is closed and won't be synced`,
-        };
-      }
-
-      logger.info(`Quote ${quoteId} passes validation, syncing to Monday`);
-
-      const enhancedQuotes = await this.simproQuotes.enhanceQuotesWithDetails(
+      const enhancedQuote = await this.simproQuotes.enhanceQuotesWithDetails(
         [basicQuote],
         companyId
       );
 
-      if (enhancedQuotes.length === 0) {
-        throw new Error(
-          `Failed to enhance quote ${quoteId} with contact details`
-        );
+      if (!enhancedQuote.length) {
+        return {
+          success: false,
+          message: `Failed to enhance quote ${quoteId} with contact details`,
+        };
       }
 
-      const enhancedQuote = enhancedQuotes[0];
-      const mappedData = this.mappingService.mapQuoteToMonday(enhancedQuote);
+      const mappedData = this.mappingService.mapQuoteToMonday(enhancedQuote[0]);
 
       const metrics = {
-        quotesProcessed: 0,
+        quotesProcessed: 1,
         accountsCreated: 0,
         contactsCreated: 0,
         dealsCreated: 0,
@@ -237,17 +226,12 @@ export class SyncService {
 
       await this.processMappedQuote(quoteId, mappedData, metrics);
 
-      logger.info(`Quote ${quoteId} sync complete`);
-      logger.info(
-        `Summary: Accounts(${metrics.accountsCreated}), Contacts(${metrics.contactsCreated}), Deals(${metrics.dealsCreated})`
-      );
-
       return {
         success: true,
-        message: `Quote ${quoteId} successfully synced: "${mappedData.deal.dealName}"`,
+        message: `Quote ${quoteId} synced successfully`,
       };
     } catch (error) {
-      logger.error(`Failed to sync single quote ${quoteId}`, { error });
+      logger.error(`Failed to sync quote ${quoteId}`, { error });
       return {
         success: false,
         message: error instanceof Error ? error.message : "Unknown error",
@@ -262,7 +246,8 @@ export class SyncService {
   ): Promise<void> {
     logger.info(`Processing account: ${mappedData.account.accountName}`);
 
-    const accountResult = await this.mondayApi.createAccount(
+    // ✅ FIXED: Use enhanced accounts service with name matching
+    const accountResult = await this.mondayAccounts.createAccount(
       process.env.MONDAY_ACCOUNTS_BOARD_ID!,
       mappedData.account
     );
@@ -280,9 +265,11 @@ export class SyncService {
     for (const contactData of mappedData.contacts) {
       logger.info(`Processing contact: ${contactData.contactName}`);
 
-      const contactResult = await this.mondayApi.createContact(
+      // ✅ FIXED: Use enhanced contacts service with SimPro ID detection
+      const contactResult = await this.mondayContacts.createContact(
         process.env.MONDAY_CONTACTS_BOARD_ID!,
-        contactData
+        contactData,
+        accountId // Pass accountId for linking
       );
 
       if (contactResult.success && contactResult.itemId) {
@@ -302,9 +289,12 @@ export class SyncService {
 
     logger.info(`Processing deal: ${mappedData.deal.dealName}`);
 
-    const dealResult = await this.mondayApi.createDeal(
+    // ✅ FIXED: Use enhanced deals service with SimPro ID detection
+    const dealResult = await this.mondayDeals.createDeal(
       process.env.MONDAY_DEALS_BOARD_ID!,
-      mappedData.deal
+      mappedData.deal,
+      accountId,
+      contactIds
     );
 
     if (!dealResult.success || !dealResult.itemId) {
