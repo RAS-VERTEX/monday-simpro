@@ -336,8 +336,8 @@ export class SyncService {
 
     logger.info(`Processing deal: ${mappedData.deal.dealName}`);
 
-    // ✅ FIXED: Use enhanced deals service with SimPro ID detection
-    const dealResult = await this.mondayDeals.createDeal(
+    // ✅ FIXED: Use original MondayClient for deals (works reliably)
+    const dealResult = await this.mondayApi.createDeal(
       process.env.MONDAY_DEALS_BOARD_ID!,
       mappedData.deal,
       accountId,
