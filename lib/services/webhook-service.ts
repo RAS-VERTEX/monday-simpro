@@ -77,6 +77,150 @@ export class WebhookService {
     }
   }
 
+  // ✅ UPDATED: handleQuoteUpdated with Closed/Archived Stage deletion logic
+  private async handleQuoteUpdated(
+    quoteId: number,
+    companyId: number
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      logger.info(`Processing quote update for quote ${quoteId}`);
+
+      // STEP 1: Check price FIRST - no Monday API calls until we know it's valuable
+      const priceCheckResult = await this.checkQuoteValueFirst(
+        quoteId,
+        companyId
+      );
+      if (!priceCheckResult.meetsMinimum) {
+        logger.info(
+          `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE} - skipping all Monday API calls`
+        );
+        return {
+          success: true,
+          message: `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE}`,
+        };
+      }
+
+      logger.info(
+        `Quote ${quoteId} value $${priceCheckResult.value} meets minimum - checking if exists in Monday`
+      );
+
+      // STEP 2: Check cache first
+      let existingDeal = this.getCachedItem(quoteId);
+
+      // STEP 3: If not in cache, do single optimized lookup
+      if (!existingDeal) {
+        existingDeal = await this.findDealOptimized(quoteId);
+        if (existingDeal) {
+          this.updateCache(quoteId, existingDeal);
+        }
+      }
+
+      // STEP 4: If doesn't exist, treat as creation
+      if (!existingDeal) {
+        logger.info(
+          `Quote ${quoteId} doesn't exist in Monday - treating update as creation`
+        );
+        return await this.handleQuoteCreated(quoteId, companyId);
+      }
+
+      // ✅ NEW STEP 5: Check if quote stage is Closed/Archived and should be deleted
+      const currentStage = priceCheckResult.basicQuote.Stage?.trim();
+      const currentStatus = priceCheckResult.basicQuote.Status?.Name?.trim();
+
+      if (this.shouldDeleteDealForClosedStage(currentStage, currentStatus)) {
+        logger.info(
+          `Quote ${quoteId} stage "${currentStage}" with status "${currentStatus}" - deleting deal from Monday`
+        );
+
+        await this.deleteDealFromMonday(existingDeal.id);
+        this.removeFromCache(quoteId);
+
+        return {
+          success: true,
+          message: `Quote ${quoteId} deal deleted from Monday due to stage "${currentStage}" with status "${currentStatus}"`,
+        };
+      }
+
+      // STEP 6: Update existing quote (status only) - existing logic
+      logger.info(
+        `Updating existing quote ${quoteId} ("${existingDeal.name}")`
+      );
+
+      const newStatus = currentStatus;
+      if (newStatus && this.isStatusUpdateNeeded(newStatus)) {
+        await this.updateDealStatusOnly(existingDeal.id, newStatus);
+        logger.info(`Quote ${quoteId} status updated to "${newStatus}"`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} status updated to "${newStatus}"`,
+        };
+      } else {
+        logger.info(`Quote ${quoteId} status unchanged, no update needed`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} status unchanged, no update needed`,
+        };
+      }
+    } catch (error: any) {
+      if (this.isRateLimitError(error)) {
+        logger.warn(`Rate limited updating quote ${quoteId}, will retry later`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} update rate limited, will retry automatically`,
+        };
+      }
+
+      logger.error(`Failed to update quote ${quoteId}`, { error });
+      return {
+        success: false,
+        message: `Failed to update quote ${quoteId}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      };
+    }
+  }
+
+  private async handleQuoteDeleted(
+    quoteId: number
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      logger.info(`Processing quote deletion for quote ${quoteId}`);
+
+      // Check cache first
+      let existingDeal = this.getCachedItem(quoteId);
+
+      // If not in cache, do single optimized lookup
+      if (!existingDeal) {
+        existingDeal = await this.findDealOptimized(quoteId);
+      }
+
+      if (!existingDeal) {
+        logger.info(`Quote ${quoteId} not found in Monday - nothing to delete`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} not found in Monday - no deletion needed`,
+        };
+      }
+
+      await this.deleteDealFromMonday(existingDeal.id);
+      this.removeFromCache(quoteId);
+
+      logger.info(`Quote ${quoteId} deleted from Monday`);
+      return {
+        success: true,
+        message: `Quote ${quoteId} deleted from Monday.com successfully`,
+      };
+    } catch (error) {
+      logger.error(`Failed to delete quote ${quoteId}`, { error });
+      return {
+        success: false,
+        message: `Failed to delete quote ${quoteId}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      };
+    }
+  }
+
   private async handleQuoteCreated(
     quoteId: number,
     companyId: number
@@ -152,131 +296,6 @@ export class WebhookService {
       return {
         success: false,
         message: `Failed to create quote ${quoteId}: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-      };
-    }
-  }
-
-  private async handleQuoteUpdated(
-    quoteId: number,
-    companyId: number
-  ): Promise<{ success: boolean; message: string }> {
-    try {
-      logger.info(`Processing quote update for quote ${quoteId}`);
-
-      // STEP 1: Check price FIRST - no Monday API calls until we know it's valuable
-      const priceCheckResult = await this.checkQuoteValueFirst(
-        quoteId,
-        companyId
-      );
-      if (!priceCheckResult.meetsMinimum) {
-        logger.info(
-          `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE} - skipping all Monday API calls`
-        );
-        return {
-          success: true,
-          message: `Quote ${quoteId} value $${priceCheckResult.value} doesn't meet minimum $${this.MINIMUM_QUOTE_VALUE}`,
-        };
-      }
-
-      logger.info(
-        `Quote ${quoteId} value $${priceCheckResult.value} meets minimum - checking if exists in Monday`
-      );
-
-      // STEP 2: Check cache first
-      let existingDeal = this.getCachedItem(quoteId);
-
-      // STEP 3: If not in cache, do single optimized lookup
-      if (!existingDeal) {
-        existingDeal = await this.findDealOptimized(quoteId);
-        if (existingDeal) {
-          this.updateCache(quoteId, existingDeal);
-        }
-      }
-
-      // STEP 4: If doesn't exist, treat as creation
-      if (!existingDeal) {
-        logger.info(
-          `Quote ${quoteId} doesn't exist in Monday - treating update as creation`
-        );
-        return await this.handleQuoteCreated(quoteId, companyId);
-      }
-
-      // STEP 5: Update existing quote (status only)
-      logger.info(
-        `Updating existing quote ${quoteId} ("${existingDeal.name}")`
-      );
-
-      const newStatus = priceCheckResult.basicQuote.Status?.Name?.trim();
-      if (newStatus && this.isStatusUpdateNeeded(newStatus)) {
-        await this.updateDealStatusOnly(existingDeal.id, newStatus);
-        logger.info(`Quote ${quoteId} status updated to "${newStatus}"`);
-        return {
-          success: true,
-          message: `Quote ${quoteId} status updated to "${newStatus}"`,
-        };
-      } else {
-        logger.info(`Quote ${quoteId} status unchanged, no update needed`);
-        return {
-          success: true,
-          message: `Quote ${quoteId} status unchanged, no update needed`,
-        };
-      }
-    } catch (error: any) {
-      if (this.isRateLimitError(error)) {
-        logger.warn(`Rate limited updating quote ${quoteId}, will retry later`);
-        return {
-          success: true,
-          message: `Quote ${quoteId} update rate limited, will retry automatically`,
-        };
-      }
-
-      logger.error(`Failed to update quote ${quoteId}`, { error });
-      return {
-        success: false,
-        message: `Failed to update quote ${quoteId}: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-      };
-    }
-  }
-
-  private async handleQuoteDeleted(
-    quoteId: number
-  ): Promise<{ success: boolean; message: string }> {
-    try {
-      logger.info(`Processing quote deletion for quote ${quoteId}`);
-
-      // Check cache first
-      let existingDeal = this.getCachedItem(quoteId);
-
-      // If not in cache, do single optimized lookup
-      if (!existingDeal) {
-        existingDeal = await this.findDealOptimized(quoteId);
-      }
-
-      if (!existingDeal) {
-        logger.info(`Quote ${quoteId} not found in Monday - nothing to delete`);
-        return {
-          success: true,
-          message: `Quote ${quoteId} not found in Monday - no deletion needed`,
-        };
-      }
-
-      await this.deleteDealFromMonday(existingDeal.id);
-      this.removeFromCache(quoteId);
-
-      logger.info(`Quote ${quoteId} deleted from Monday`);
-      return {
-        success: true,
-        message: `Quote ${quoteId} deleted from Monday.com successfully`,
-      };
-    } catch (error) {
-      logger.error(`Failed to delete quote ${quoteId}`, { error });
-      return {
-        success: false,
-        message: `Failed to delete quote ${quoteId}: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
       };
@@ -530,5 +549,52 @@ export class WebhookService {
       logger.error(`Failed to delete deal ${dealId}`, { error });
       throw error;
     }
+  }
+
+  // ✅ NEW METHOD: Check if deal should be deleted based on stage and status
+  private shouldDeleteDealForClosedStage(
+    stage: string,
+    status: string
+  ): boolean {
+    if (!stage || !status) {
+      return false;
+    }
+
+    // Check if stage is Closed or Archived
+    const stageToCheck = stage.toLowerCase().trim();
+    const isClosedOrArchived =
+      stageToCheck === "closed" || stageToCheck === "archived";
+
+    if (!isClosedOrArchived) {
+      return false;
+    }
+
+    // Keep deals if status is "Quote: Won" or "Quote: Archived - Not Won"
+    const statusesToKeep = [
+      "Quote: Won",
+      "Quote : Won",
+      "Quote: Archived - Not Won",
+      "Quote : Archived - Not Won",
+    ];
+
+    const shouldKeep = statusesToKeep.some((keepStatus) =>
+      status
+        .replace(/\s/g, "")
+        .toLowerCase()
+        .includes(keepStatus.replace(/\s/g, "").toLowerCase())
+    );
+
+    if (shouldKeep) {
+      logger.info(
+        `Quote stage "${stage}" but keeping deal due to status "${status}"`
+      );
+      return false;
+    }
+
+    // Delete the deal - stage is Closed/Archived and status is not a "keep" status
+    logger.info(
+      `Quote stage "${stage}" with status "${status}" - will delete deal`
+    );
+    return true;
   }
 }
