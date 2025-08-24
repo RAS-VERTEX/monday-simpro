@@ -1,4 +1,4 @@
-// lib/clients/monday/monday-accounts.ts - Complete fixed version with name matching
+// lib/clients/monday/monday-accounts.ts - FIXED: Proper SimPro Customer ID, no notes interference
 import { MondayApi } from "./monday-api";
 import { MondayColumnIds } from "./monday-config";
 import { MondayAccountData, MondayItem } from "@/types/monday";
@@ -70,14 +70,14 @@ export class MondayAccounts {
 
       const columnValues: any = {};
 
-      // Add SimPro Customer ID to dedicated column
+      // ✅ CRITICAL: Add SimPro Customer ID to dedicated column
       columnValues["text_mktzqxk"] = accountData.simproCustomerId.toString();
+      logger.info(
+        `[Monday Accounts] 🆔 Setting SimPro Customer ID: ${accountData.simproCustomerId}`
+      );
 
-      // Add SimPro tracking info to notes
-      const notes = `SimPro Customer ID: ${
-        accountData.simproCustomerId
-      }\nLast Sync: ${new Date().toISOString()}\nSource: SimPro`;
-      columnValues[this.columnIds.accounts.notes] = notes;
+      // ✅ REMOVED: NO NOTES - KEEP NOTES EMPTY
+      // columnValues[this.columnIds.accounts.notes] = notes; // DELETED THIS
 
       const item = await this.createItem(
         boardId,
@@ -86,7 +86,7 @@ export class MondayAccounts {
       );
 
       logger.info(
-        `[Monday Accounts] ✅ Account created successfully: ${item.id}`
+        `[Monday Accounts] ✅ Account created successfully: ${accountData.accountName} (${item.id}) with SimPro Customer ID: ${accountData.simproCustomerId}`
       );
       return { success: true, itemId: item.id };
     } catch (error) {
@@ -200,7 +200,7 @@ export class MondayAccounts {
   }
 
   /**
-   * Add SimPro Customer ID to existing account's dedicated column
+   * Add SimPro Customer ID to existing account's dedicated column (NO NOTES)
    */
   private async addSimProIdToAccount(
     accountId: string,
@@ -208,7 +208,7 @@ export class MondayAccounts {
     simproCustomerId: number
   ): Promise<void> {
     try {
-      // Update dedicated SimPro ID column
+      // ✅ ONLY update the SimPro ID column - NO NOTES
       const mutation = `
         mutation UpdateSimProId($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
           change_column_value(
@@ -229,23 +229,13 @@ export class MondayAccounts {
         value: JSON.stringify(simproCustomerId.toString()),
       });
 
-      // Also update notes with sync info
-      const currentNotes = await this.getCurrentNotes(accountId);
-      const simProInfo = `SimPro Customer ID: ${simproCustomerId}\nLast Sync: ${new Date().toISOString()}\nSource: SimPro (Added to existing account)`;
-
-      const updatedNotes = currentNotes
-        ? `${currentNotes}\n\n${simProInfo}`
-        : simProInfo;
-
-      await this.api.query(mutation, {
-        itemId: accountId,
-        boardId,
-        columnId: this.columnIds.accounts.notes,
-        value: JSON.stringify(updatedNotes),
-      });
+      // ✅ REMOVED: NO NOTES UPDATES
+      // const currentNotes = await this.getCurrentNotes(accountId); // DELETED
+      // const updatedNotes = ... // DELETED
+      // await this.api.query... // DELETED
 
       logger.info(
-        `[Monday Accounts] ✅ Added SimPro Customer ID ${simproCustomerId} to account ${accountId} in dedicated column`
+        `[Monday Accounts] ✅ Added SimPro Customer ID ${simproCustomerId} to account ${accountId} (NO NOTES)`
       );
     } catch (error) {
       logger.error("[Monday Accounts] Error adding SimPro ID to account", {
@@ -254,34 +244,6 @@ export class MondayAccounts {
         simproCustomerId,
       });
       throw error;
-    }
-  }
-
-  /**
-   * Get current notes from account
-   */
-  private async getCurrentNotes(accountId: string): Promise<string | null> {
-    try {
-      const query = `
-        query GetAccountNotes($itemId: ID!) {
-          items(ids: [$itemId]) {
-            column_values(ids: ["${this.columnIds.accounts.notes}"]) {
-              text
-            }
-          }
-        }
-      `;
-
-      const result = await this.api.query(query, { itemId: accountId });
-      const notesColumn = result.items[0]?.column_values[0];
-
-      return notesColumn?.text || null;
-    } catch (error) {
-      logger.error("[Monday Accounts] Error getting current notes", {
-        error,
-        accountId,
-      });
-      return null;
     }
   }
 
