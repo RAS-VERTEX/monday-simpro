@@ -126,7 +126,7 @@ export class MondayClient {
   ): Promise<MondayItem | null> {
     const columnMapping = {
       customer: "text_mktzqxk", // ✅ Accounts SimPro ID
-      contact: "text_mktzxzhy", // ✅ Contacts SimPro ID
+      contact: "text_mkty91sr", // ✅ FIXED: Correct Contacts SimPro ID
       quote: "text_mktzc7e6", // ✅ Deals SimPro ID
     };
 
@@ -227,9 +227,12 @@ export class MondayClient {
       }
 
       const columnValues: MondayColumnValues = {
-        // ✅ FIXED: Use correct SimPro ID column for accounts
+        // ✅ FIXED: Use correct SimPro Customer ID column for accounts
         text_mktzqxk: accountData.simproCustomerId.toString(),
       };
+
+      // ✅ REMOVED: NO NOTES - KEEP NOTES EMPTY
+      // Do not set notes field
 
       const item = await this.createItem(
         boardId,
@@ -238,7 +241,7 @@ export class MondayClient {
       );
 
       console.log(
-        `[Monday] ✅ Created new account: ${accountData.accountName} (${item.id})`
+        `[Monday] ✅ Created new account: ${accountData.accountName} (${item.id}) with SimPro Customer ID: ${accountData.simproCustomerId}`
       );
       return {
         success: true,
@@ -321,8 +324,14 @@ export class MondayClient {
         };
       }
 
-      // ✅ FIXED: Use correct SimPro ID column for contacts
-      columnValues["text_mktzxzhy"] = contactData.simproContactId.toString();
+      // ✅ CRITICAL FIX: Use the correct SimPro Contact ID column
+      columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
+      console.log(
+        `🆔 [MONDAY DEBUG] Setting SimPro Contact ID in column text_mkty91sr: ${contactData.simproContactId}`
+      );
+
+      // ✅ REMOVED: NO NOTES - KEEP NOTES EMPTY
+      // Do not set any notes field
 
       const item = await this.createItem(
         boardId,
@@ -331,7 +340,7 @@ export class MondayClient {
       );
 
       console.log(
-        `[Monday] ✅ Created new contact: ${contactData.contactName} (${item.id}) with type "${contactData.contactType}"`
+        `[Monday] ✅ Created new contact: ${contactData.contactName} (${item.id}) with SimPro Contact ID: ${contactData.simproContactId}`
       );
       return {
         success: true,
@@ -524,12 +533,7 @@ export class MondayClient {
 
       const mutation = `
         mutation linkItems($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-          change_column_value(
-            item_id: $itemId,
-            board_id: $boardId,
-            column_id: $columnId,
-            value: $value
-          ) {
+          change_column_value(item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) {
             id
           }
         }
@@ -545,59 +549,15 @@ export class MondayClient {
       });
 
       console.log(
-        `[Monday] ✅ Successfully linked ${childItemId} to ${parentItemId}`
+        `[Monday] ✅ Successfully linked item ${childItemId} to ${parentItemId}`
       );
+
       return { success: true };
     } catch (error) {
-      console.error(`[Monday] Failed to link items:`, error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  async linkMultipleItems(
-    parentItemId: string,
-    childItemIds: string[],
-    parentBoardId: string,
-    relationColumnId: string
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      console.log(
-        `[Monday] 🔗 Linking multiple items ${childItemIds.join(
-          ", "
-        )} to ${parentItemId} via column ${relationColumnId}`
+      console.error(
+        `[Monday] Failed to link item ${childItemId} to ${parentItemId}:`,
+        error
       );
-
-      const mutation = `
-        mutation linkMultipleItems($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-          change_column_value(
-            item_id: $itemId,
-            board_id: $boardId,
-            column_id: $columnId,
-            value: $value
-          ) {
-            id
-          }
-        }
-      `;
-
-      await this.api.query(mutation, {
-        itemId: parentItemId,
-        boardId: parentBoardId,
-        columnId: relationColumnId,
-        value: JSON.stringify({
-          item_ids: childItemIds.map((id) => parseInt(id)),
-        }),
-      });
-
-      console.log(
-        `[Monday] ✅ Successfully linked ${childItemIds.length} items to ${parentItemId}`
-      );
-      return { success: true };
-    } catch (error) {
-      console.error(`[Monday] Failed to link multiple items:`, error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
