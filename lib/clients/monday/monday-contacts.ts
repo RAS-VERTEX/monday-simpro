@@ -1,4 +1,4 @@
-// lib/clients/monday/monday-contacts.ts - FIXED: Email/phone validation and cleaning
+// lib/clients/monday/monday-contacts.ts - FIXED: Proper SimPro ID column, no notes
 import { MondayApi } from "./monday-api";
 import { MondayColumnIds } from "./monday-config";
 import { MondayContactData, MondayItem } from "@/types/monday";
@@ -13,7 +13,7 @@ export class MondayContacts {
     accountId?: string
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      // Check if contact already exists
+      // Check if contact already exists by SimPro ID
       const existing = await this.findContactBySimProId(
         contactData.simproContactId,
         boardId
@@ -43,6 +43,31 @@ export class MondayContacts {
 
       // Prepare column values for new contact
       const columnValues: any = {};
+
+      // ✅ CRITICAL FIX: Set the SimPro ID in the dedicated column
+      // This is what was missing and causing the empty SimPro ID column!
+      columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
+      logger.info(
+        `[Monday Contacts] 🆔 Setting SimPro Contact ID: ${contactData.simproContactId}`
+      );
+
+      // Contact type
+      if (contactData.contactType) {
+        const typeMapping = {
+          customer: "Customer Contact",
+          site: "Site Contact",
+        };
+        const mappedType =
+          typeMapping[contactData.contactType as keyof typeof typeMapping];
+        if (mappedType) {
+          columnValues[this.columnIds.contacts.type] = {
+            labels: [mappedType],
+          };
+          logger.debug(
+            `[Monday Contacts] 🏷️ Setting contact type: ${mappedType}`
+          );
+        }
+      }
 
       // Email field - CLEAN AND VALIDATE
       if (contactData.email) {
@@ -94,18 +119,8 @@ export class MondayContacts {
         );
       }
 
-      // Add SimPro tracking info
-      const notes = `SimPro Contact ID: ${
-        contactData.simproContactId
-      }\nSimPro Customer ID: ${contactData.simproCustomerId}\nDepartment: ${
-        contactData.department || "Not specified"
-      }\nPosition: ${contactData.position || "Not specified"}\nEmail: ${
-        contactData.email || "Not provided"
-      }\nPhone: ${
-        contactData.phone || "Not provided"
-      }\nLast Sync: ${new Date().toISOString()}\nSource: SimPro`;
-
-      columnValues[this.columnIds.contacts.notes] = notes;
+      // ✅ REMOVED: Do NOT set notes - keep notes column empty as you requested
+      // columnValues[this.columnIds.contacts.notes] = notes; // REMOVED THIS LINE
 
       const item = await this.createItem(
         boardId,
@@ -114,7 +129,7 @@ export class MondayContacts {
       );
 
       logger.info(
-        `[Monday Contacts] ✅ Contact created successfully: ${item.id}`
+        `[Monday Contacts] ✅ Contact created successfully: ${contactData.contactName} (${item.id}) with SimPro ID: ${contactData.simproContactId}`
       );
       return { success: true, itemId: item.id };
     } catch (error) {
@@ -129,7 +144,7 @@ export class MondayContacts {
     }
   }
 
-  // ✅ FIXED: Efficiently backfill missing email/phone with validation
+  // ✅ FIXED: Efficiently backfill missing email/phone with validation (NO NOTES)
   private async updateMissingContactFields(
     contactId: string,
     boardId: string,
@@ -137,14 +152,13 @@ export class MondayContacts {
     accountId?: string
   ): Promise<void> {
     try {
-      logger.info(
-        `[Monday Contacts] 🔍 Backfilling contact ${contactId} with latest data`
-      );
+      const updates: Array<{
+        columnId: string;
+        value: any;
+        field: string;
+      }> = [];
 
-      const updates: Array<{ columnId: string; value: any; field: string }> =
-        [];
-
-      // Email backfill - CLEAN AND VALIDATE
+      // Check if we need to add email
       if (contactData.email) {
         const cleanEmail = contactData.email.trim().toLowerCase();
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -158,14 +172,10 @@ export class MondayContacts {
             },
             field: "email",
           });
-        } else {
-          logger.warn(
-            `[Monday Contacts] ⚠️ Invalid email format for backfill, skipping: "${contactData.email}"`
-          );
         }
       }
 
-      // Phone backfill - CLEAN AND VALIDATE
+      // Check if we need to add phone
       if (contactData.phone) {
         const rawPhone = contactData.phone.trim();
         const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
@@ -179,14 +189,10 @@ export class MondayContacts {
             },
             field: "phone",
           });
-        } else {
-          logger.warn(
-            `[Monday Contacts] ⚠️ Invalid phone format for backfill, skipping: "${contactData.phone}"`
-          );
         }
       }
 
-      // Account linking backfill
+      // Check if we need to add account link
       if (accountId) {
         updates.push({
           columnId: this.columnIds.contacts.accounts_relation,
@@ -213,26 +219,8 @@ export class MondayContacts {
           logger.debug(`[Monday Contacts] ✅ Backfilled ${update.field}`);
         }
 
-        // Update notes to reflect the backfill
-        const updatedNotes = `SimPro Contact ID: ${
-          contactData.simproContactId
-        }\nSimPro Customer ID: ${contactData.simproCustomerId}\nDepartment: ${
-          contactData.department || "Not specified"
-        }\nPosition: ${contactData.position || "Not specified"}\nEmail: ${
-          contactData.email || "Not provided"
-        }\nPhone: ${
-          contactData.phone || "Not provided"
-        }\nLast Sync: ${new Date().toISOString()}\nSource: SimPro (Backfilled)`;
-
-        await this.updateColumnValue(
-          contactId,
-          boardId,
-          this.columnIds.contacts.notes,
-          updatedNotes
-        );
-
         logger.info(
-          `[Monday Contacts] ✅ Contact ${contactId} backfilled successfully`
+          `[Monday Contacts] ✅ Contact ${contactId} backfilled successfully (no notes updated)`
         );
       } else {
         logger.info(
@@ -262,7 +250,7 @@ export class MondayContacts {
               items {
                 id
                 name
-                column_values {
+                column_values(ids: ["text_mkty91sr"]) {
                   id
                   text
                   value
@@ -291,12 +279,7 @@ export class MondayContacts {
           cursor,
         });
 
-        const itemsPage:
-          | {
-              cursor: string | null;
-              items: MondayItem[];
-            }
-          | undefined = response.data?.boards?.[0]?.items_page;
+        const itemsPage = response.data?.boards?.[0]?.items_page;
         if (!itemsPage) break;
 
         // Search through items for matching SimPro ID
@@ -388,34 +371,5 @@ export class MondayContacts {
       columnId,
       value: JSON.stringify(value),
     });
-  }
-
-  // Link contact to deal
-  async linkContactToDeal(
-    contactId: string,
-    dealId: string,
-    dealBoardId: string
-  ): Promise<void> {
-    try {
-      await this.updateColumnValue(
-        dealId,
-        dealBoardId,
-        this.columnIds.deals.contacts_relation,
-        {
-          item_ids: [parseInt(contactId)],
-        }
-      );
-
-      logger.info(
-        `[Monday Contacts] 🔗 Linked contact ${contactId} to deal ${dealId}`
-      );
-    } catch (error) {
-      logger.error(`[Monday Contacts] Failed to link contact to deal`, {
-        error,
-        contactId,
-        dealId,
-      });
-      throw error;
-    }
   }
 }
