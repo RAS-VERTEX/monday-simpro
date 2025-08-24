@@ -1,141 +1,98 @@
-// lib/clients/monday/monday-contacts.ts - FIXED: Proper SimPro ID column, no notes
+// lib/clients/monday/monday-accounts.ts - FIXED: Proper SimPro Customer ID, no notes interference
 import { MondayApi } from "./monday-api";
 import { MondayColumnIds } from "./monday-config";
-import { MondayContactData, MondayItem } from "@/types/monday";
+import { MondayAccountData, MondayItem } from "@/types/monday";
 import { logger } from "@/lib/utils/logger";
 
-export class MondayContacts {
+export class MondayAccounts {
   constructor(private api: MondayApi, private columnIds: MondayColumnIds) {}
 
-  async createContact(
+  async createAccount(
     boardId: string,
-    contactData: MondayContactData,
-    accountId?: string
+    accountData: MondayAccountData
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      // Check if contact already exists by SimPro ID
-      const existing = await this.findContactBySimProId(
-        contactData.simproContactId,
+      // STEP 1: Check for exact name match first (case-insensitive)
+      const existingByName = await this.findAccountByExactName(
+        accountData.accountName,
         boardId
       );
 
-      if (existing) {
+      if (existingByName) {
         logger.info(
-          `[Monday Contacts] ✅ Using existing contact: "${existing.name}" (${existing.id})`
+          `[Monday Accounts] 🔄 Found existing account by name: "${existingByName.name}" (${existingByName.id})`
         );
 
-        // ✅ EFFICIENT: Only backfill missing email/phone data
-        if (contactData.email || contactData.phone) {
-          await this.updateMissingContactFields(
-            existing.id,
-            boardId,
-            contactData,
-            accountId
-          );
-        }
+        // Check if it already has a SimPro ID
+        const hasSimProId = await this.accountHasSimProId(
+          existingByName.id,
+          boardId
+        );
 
-        return { success: true, itemId: existing.id };
+        if (!hasSimProId) {
+          // Update existing account with SimPro ID
+          await this.addSimProIdToAccount(
+            existingByName.id,
+            boardId,
+            accountData.simproCustomerId
+          );
+
+          logger.info(
+            `[Monday Accounts] ✅ Updated existing account "${existingByName.name}" with SimPro Customer ID: ${accountData.simproCustomerId}`
+          );
+
+          return { success: true, itemId: existingByName.id };
+        } else {
+          logger.info(
+            `[Monday Accounts] ✅ Using existing account "${existingByName.name}" (already has SimPro ID)`
+          );
+          return { success: true, itemId: existingByName.id };
+        }
       }
 
-      logger.info(
-        `[Monday Contacts] Creating new contact: "${contactData.contactName}"`
+      // STEP 2: Check by SimPro Customer ID (existing logic)
+      const existingBySimProId = await this.findAccountBySimProId(
+        accountData.simproCustomerId,
+        boardId
       );
 
-      // Prepare column values for new contact
+      if (existingBySimProId) {
+        logger.info(
+          `[Monday Accounts] ✅ Found existing account by SimPro ID: "${existingBySimProId.name}" (${existingBySimProId.id})`
+        );
+        return { success: true, itemId: existingBySimProId.id };
+      }
+
+      // STEP 3: Create new account if no matches found
+      logger.info(
+        `[Monday Accounts] Creating new account: "${accountData.accountName}"`
+      );
+
       const columnValues: any = {};
 
-      // ✅ CRITICAL FIX: Set the SimPro ID in the dedicated column
-      // This is what was missing and causing the empty SimPro ID column!
-      columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
+      // ✅ CRITICAL: Add SimPro Customer ID to dedicated column
+      columnValues["text_mktzqxk"] = accountData.simproCustomerId.toString();
       logger.info(
-        `[Monday Contacts] 🆔 Setting SimPro Contact ID: ${contactData.simproContactId}`
+        `[Monday Accounts] 🆔 Setting SimPro Customer ID: ${accountData.simproCustomerId}`
       );
 
-      // Contact type
-      if (contactData.contactType) {
-        const typeMapping = {
-          customer: "Customer Contact",
-          site: "Site Contact",
-        };
-        const mappedType =
-          typeMapping[contactData.contactType as keyof typeof typeMapping];
-        if (mappedType) {
-          columnValues[this.columnIds.contacts.type] = {
-            labels: [mappedType],
-          };
-          logger.debug(
-            `[Monday Contacts] 🏷️ Setting contact type: ${mappedType}`
-          );
-        }
-      }
-
-      // Email field - CLEAN AND VALIDATE
-      if (contactData.email) {
-        const cleanEmail = contactData.email.trim().toLowerCase();
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-        if (emailRegex.test(cleanEmail)) {
-          logger.info(
-            `[Monday Contacts] 📧 Setting clean email: ${cleanEmail}`
-          );
-          columnValues[this.columnIds.contacts.email] = {
-            email: cleanEmail,
-            text: cleanEmail,
-          };
-        } else {
-          logger.warn(
-            `[Monday Contacts] ⚠️ Invalid email format, skipping: "${contactData.email}"`
-          );
-        }
-      }
-
-      // Phone field - CLEAN AND VALIDATE
-      if (contactData.phone) {
-        const rawPhone = contactData.phone.trim();
-        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-
-        if (cleanPhone.length >= 8) {
-          logger.info(
-            `[Monday Contacts] 📞 Setting clean phone: ${cleanPhone} (from "${rawPhone}")`
-          );
-          columnValues[this.columnIds.contacts.phone] = {
-            phone: cleanPhone,
-            countryShortName: "AU",
-          };
-        } else {
-          logger.warn(
-            `[Monday Contacts] ⚠️ Invalid phone format, skipping: "${contactData.phone}"`
-          );
-        }
-      }
-
-      // Link to account if provided
-      if (accountId) {
-        columnValues[this.columnIds.contacts.accounts_relation] = {
-          item_ids: [parseInt(accountId)],
-        };
-        logger.debug(
-          `[Monday Contacts] 🔗 Linking contact to account: ${accountId}`
-        );
-      }
-
-      // ✅ REMOVED: Do NOT set notes - keep notes column empty as you requested
-      // columnValues[this.columnIds.contacts.notes] = notes; // REMOVED THIS LINE
+      // ✅ REMOVED: NO NOTES - KEEP NOTES EMPTY
+      // columnValues[this.columnIds.accounts.notes] = notes; // DELETED THIS
 
       const item = await this.createItem(
         boardId,
-        contactData.contactName,
+        accountData.accountName,
         columnValues
       );
 
       logger.info(
-        `[Monday Contacts] ✅ Contact created successfully: ${contactData.contactName} (${item.id}) with SimPro ID: ${contactData.simproContactId}`
+        `[Monday Accounts] ✅ Account created successfully: ${accountData.accountName} (${item.id}) with SimPro Customer ID: ${accountData.simproCustomerId}`
       );
       return { success: true, itemId: item.id };
     } catch (error) {
-      logger.error(`[Monday Contacts] Failed to create contact`, {
+      logger.error(`[Monday Accounts] Failed to create account`, {
         error,
-        contactData,
+        accountData,
       });
       return {
         success: false,
@@ -144,116 +101,28 @@ export class MondayContacts {
     }
   }
 
-  // ✅ FIXED: Efficiently backfill missing email/phone with validation (NO NOTES)
-  private async updateMissingContactFields(
-    contactId: string,
-    boardId: string,
-    contactData: MondayContactData,
-    accountId?: string
-  ): Promise<void> {
-    try {
-      const updates: Array<{
-        columnId: string;
-        value: any;
-        field: string;
-      }> = [];
-
-      // Check if we need to add email
-      if (contactData.email) {
-        const cleanEmail = contactData.email.trim().toLowerCase();
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-        if (emailRegex.test(cleanEmail)) {
-          updates.push({
-            columnId: this.columnIds.contacts.email,
-            value: {
-              email: cleanEmail,
-              text: cleanEmail,
-            },
-            field: "email",
-          });
-        }
-      }
-
-      // Check if we need to add phone
-      if (contactData.phone) {
-        const rawPhone = contactData.phone.trim();
-        const cleanPhone = rawPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-
-        if (cleanPhone.length >= 8) {
-          updates.push({
-            columnId: this.columnIds.contacts.phone,
-            value: {
-              phone: cleanPhone,
-              countryShortName: "AU",
-            },
-            field: "phone",
-          });
-        }
-      }
-
-      // Check if we need to add account link
-      if (accountId) {
-        updates.push({
-          columnId: this.columnIds.contacts.accounts_relation,
-          value: {
-            item_ids: [parseInt(accountId)],
-          },
-          field: "account_link",
-        });
-      }
-
-      // Only make API calls if we have data to update
-      if (updates.length > 0) {
-        logger.info(
-          `[Monday Contacts] 🔄 Applying ${updates.length} backfill updates for contact ${contactId}`
-        );
-
-        for (const update of updates) {
-          await this.updateColumnValue(
-            contactId,
-            boardId,
-            update.columnId,
-            update.value
-          );
-          logger.debug(`[Monday Contacts] ✅ Backfilled ${update.field}`);
-        }
-
-        logger.info(
-          `[Monday Contacts] ✅ Contact ${contactId} backfilled successfully (no notes updated)`
-        );
-      } else {
-        logger.info(
-          `[Monday Contacts] ✅ Contact ${contactId} - no data to backfill`
-        );
-      }
-    } catch (error) {
-      // Don't fail the operation if backfill fails - just log it
-      logger.warn(
-        `[Monday Contacts] ⚠️ Failed to backfill contact ${contactId}, continuing...`,
-        { error }
-      );
-    }
-  }
-
-  // Helper method to find contact by SimPro ID
-  private async findContactBySimProId(
-    simproContactId: number,
+  /**
+   * Find account by exact name match (case-insensitive)
+   */
+  private async findAccountByExactName(
+    accountName: string,
     boardId: string
   ): Promise<MondayItem | null> {
     try {
+      logger.debug(
+        `[Monday Accounts] Searching for exact name match: "${accountName}"`
+      );
+
       const query = `
-        query FindContact($boardId: ID!, $cursor: String) {
+        query FindAccountByName($boardId: ID!) {
           boards(ids: [$boardId]) {
-            items_page(limit: 100, cursor: $cursor) {
-              cursor
+            items_page(limit: 100) {
               items {
                 id
                 name
-                column_values(ids: ["text_mkty91sr"]) {
+                column_values {
                   id
                   text
-                  value
                 }
               }
             }
@@ -261,64 +130,186 @@ export class MondayContacts {
         }
       `;
 
-      let cursor: string | null = null;
-      const simproIdStr = simproContactId.toString();
+      const result = await this.api.query(query, { boardId });
+      const items = result.boards[0]?.items_page?.items || [];
 
-      do {
-        const response: {
-          data?: {
-            boards: Array<{
-              items_page: {
-                cursor: string | null;
-                items: MondayItem[];
-              };
-            }>;
-          };
-        } = await this.api.query(query, {
-          boardId,
-          cursor,
-        });
+      const cleanSearchName = accountName.trim().toLowerCase();
 
-        const itemsPage = response.data?.boards?.[0]?.items_page;
-        if (!itemsPage) break;
+      for (const item of items) {
+        const cleanItemName = item.name.trim().toLowerCase();
 
-        // Search through items for matching SimPro ID
-        for (const item of itemsPage.items) {
-          const simproIdColumn = item.column_values?.find(
-            (col: any) => col.id === "text_mkty91sr" // Contact SimPro ID column
+        if (cleanItemName === cleanSearchName) {
+          logger.debug(
+            `[Monday Accounts] Found exact name match: "${item.name}" (${item.id})`
           );
-
-          if (simproIdColumn?.text === simproIdStr) {
-            logger.debug(
-              `[Monday Contacts] Found contact by SimPro ID ${simproContactId}: ${item.name} (${item.id})`
-            );
-            return {
-              id: item.id,
-              name: item.name,
-              column_values: item.column_values,
-            };
-          }
+          return item;
         }
+      }
 
-        cursor = itemsPage.cursor;
-      } while (cursor);
-
+      logger.debug(
+        `[Monday Accounts] No exact name match found for: "${accountName}"`
+      );
       return null;
     } catch (error) {
-      logger.error(
-        `[Monday Contacts] Failed to find contact by SimPro ID ${simproContactId}`,
-        { error }
-      );
+      logger.error("[Monday Accounts] Error finding account by name", {
+        error,
+        accountName,
+      });
       return null;
     }
   }
 
-  // Helper method to create item
+  /**
+   * Check if account already has a SimPro ID in dedicated column
+   */
+  private async accountHasSimProId(
+    accountId: string,
+    boardId: string
+  ): Promise<boolean> {
+    try {
+      const query = `
+        query CheckSimProId($itemId: ID!) {
+          items(ids: [$itemId]) {
+            column_values(ids: ["text_mktzqxk"]) {
+              id
+              text
+            }
+          }
+        }
+      `;
+
+      const result = await this.api.query(query, { itemId: accountId });
+      const simproColumn = result.items[0]?.column_values[0];
+
+      const hasSimProId = !!(simproColumn?.text && simproColumn.text.trim());
+
+      logger.debug(
+        `[Monday Accounts] Account ${accountId} has SimPro ID: ${hasSimProId} (value: "${
+          simproColumn?.text || "empty"
+        }")`
+      );
+
+      return hasSimProId;
+    } catch (error) {
+      logger.error("[Monday Accounts] Error checking SimPro ID", {
+        error,
+        accountId,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Add SimPro Customer ID to existing account's dedicated column (NO NOTES)
+   */
+  private async addSimProIdToAccount(
+    accountId: string,
+    boardId: string,
+    simproCustomerId: number
+  ): Promise<void> {
+    try {
+      // ✅ ONLY update the SimPro ID column - NO NOTES
+      const mutation = `
+        mutation UpdateSimProId($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+          change_column_value(
+            item_id: $itemId
+            board_id: $boardId
+            column_id: $columnId
+            value: $value
+          ) {
+            id
+          }
+        }
+      `;
+
+      await this.api.query(mutation, {
+        itemId: accountId,
+        boardId,
+        columnId: "text_mktzqxk", // Dedicated SimPro ID column
+        value: JSON.stringify(simproCustomerId.toString()),
+      });
+
+      // ✅ REMOVED: NO NOTES UPDATES
+      // const currentNotes = await this.getCurrentNotes(accountId); // DELETED
+      // const updatedNotes = ... // DELETED
+      // await this.api.query... // DELETED
+
+      logger.info(
+        `[Monday Accounts] ✅ Added SimPro Customer ID ${simproCustomerId} to account ${accountId} (NO NOTES)`
+      );
+    } catch (error) {
+      logger.error("[Monday Accounts] Error adding SimPro ID to account", {
+        error,
+        accountId,
+        simproCustomerId,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Find account by SimPro Customer ID in dedicated column
+   */
+  private async findAccountBySimProId(
+    simproCustomerId: number,
+    boardId: string
+  ): Promise<MondayItem | null> {
+    try {
+      const query = `
+        query FindAccount($boardId: ID!) {
+          boards(ids: [$boardId]) {
+            items_page(limit: 100) {
+              items {
+                id
+                name
+                column_values(ids: ["text_mktzqxk"]) {
+                  id
+                  text
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const result = await this.api.query(query, { boardId });
+      const items = result.boards[0]?.items_page?.items || [];
+      const simproIdStr = simproCustomerId.toString();
+
+      for (const item of items) {
+        const simproIdColumn = item.column_values?.find(
+          (cv: any) => cv.id === "text_mktzqxk"
+        );
+
+        if (simproIdColumn?.text === simproIdStr) {
+          logger.debug(
+            `[Monday Accounts] Found account by SimPro ID ${simproCustomerId}: ${item.name} (${item.id})`
+          );
+          return item;
+        }
+      }
+
+      logger.debug(
+        `[Monday Accounts] No account found with SimPro ID: ${simproCustomerId}`
+      );
+      return null;
+    } catch (error) {
+      logger.error("[Monday Accounts] Error finding account by SimPro ID", {
+        error,
+        simproCustomerId,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Create new item in Monday.com
+   */
   private async createItem(
     boardId: string,
     itemName: string,
     columnValues: any
-  ): Promise<{ id: string; name: string }> {
+  ): Promise<MondayItem> {
     const mutation = `
       mutation CreateItem($boardId: ID!, $itemName: String!, $columnValues: JSON!) {
         create_item(
@@ -332,44 +323,16 @@ export class MondayContacts {
       }
     `;
 
-    const response = await this.api.query(mutation, {
+    const result = await this.api.query(mutation, {
       boardId,
       itemName,
       columnValues: JSON.stringify(columnValues),
     });
 
-    if (!response.create_item) {
-      throw new Error("Failed to create item");
+    if (!result.create_item) {
+      throw new Error("Failed to create item - no response from Monday.com");
     }
 
-    return response.create_item;
-  }
-
-  // Helper method to update column value
-  private async updateColumnValue(
-    itemId: string,
-    boardId: string,
-    columnId: string,
-    value: any
-  ): Promise<void> {
-    const mutation = `
-      mutation UpdateColumn($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: $columnId
-          value: $value
-        ) {
-          id
-        }
-      }
-    `;
-
-    await this.api.query(mutation, {
-      itemId,
-      boardId,
-      columnId,
-      value: JSON.stringify(value),
-    });
+    return result.create_item;
   }
 }
