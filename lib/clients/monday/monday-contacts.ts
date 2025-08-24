@@ -1,4 +1,4 @@
-// lib/clients/monday/monday-contacts.ts - FIXED: Proper SimPro ID column, no notes
+// lib/clients/monday/monday-contacts.ts - FIXED: Proper SimPro ID assignment, no notes
 import { MondayApi } from "./monday-api";
 import { MondayColumnIds } from "./monday-config";
 import { MondayContactData, MondayItem } from "@/types/monday";
@@ -13,7 +13,7 @@ export class MondayContacts {
     accountId?: string
   ): Promise<{ success: boolean; itemId?: string; error?: string }> {
     try {
-      // Check if contact already exists by SimPro ID
+      // Check if contact already exists
       const existing = await this.findContactBySimProId(
         contactData.simproContactId,
         boardId
@@ -44,9 +44,8 @@ export class MondayContacts {
       // Prepare column values for new contact
       const columnValues: any = {};
 
-      // ✅ CRITICAL FIX: Set the SimPro ID in the dedicated column
-      // This is what was missing and causing the empty SimPro ID column!
-      columnValues["text_mkty91sr"] = contactData.simproContactId.toString();
+      // ✅ CRITICAL FIX: Set the SimPro Contact ID in the correct column
+      columnValues["text_mktzxzhy"] = contactData.simproContactId.toString();
       logger.info(
         `[Monday Contacts] 🆔 Setting SimPro Contact ID: ${contactData.simproContactId}`
       );
@@ -119,8 +118,8 @@ export class MondayContacts {
         );
       }
 
-      // ✅ REMOVED: Do NOT set notes - keep notes column empty as you requested
-      // columnValues[this.columnIds.contacts.notes] = notes; // REMOVED THIS LINE
+      // ✅ REMOVED: Do NOT set notes - keep notes column empty
+      // columnValues[this.columnIds.contacts.notes] = notes; // DELETED
 
       const item = await this.createItem(
         boardId,
@@ -129,7 +128,7 @@ export class MondayContacts {
       );
 
       logger.info(
-        `[Monday Contacts] ✅ Contact created successfully: ${contactData.contactName} (${item.id}) with SimPro ID: ${contactData.simproContactId}`
+        `[Monday Contacts] ✅ Contact created successfully: ${contactData.contactName} (${item.id}) with SimPro Contact ID: ${contactData.simproContactId}`
       );
       return { success: true, itemId: item.id };
     } catch (error) {
@@ -219,6 +218,10 @@ export class MondayContacts {
           logger.debug(`[Monday Contacts] ✅ Backfilled ${update.field}`);
         }
 
+        // ✅ REMOVED: NO NOTES UPDATES
+        // const updatedNotes = `SimPro Contact ID...`; // DELETED
+        // await this.updateColumnValue(...); // DELETED
+
         logger.info(
           `[Monday Contacts] ✅ Contact ${contactId} backfilled successfully (no notes updated)`
         );
@@ -250,7 +253,7 @@ export class MondayContacts {
               items {
                 id
                 name
-                column_values(ids: ["text_mkty91sr"]) {
+                column_values(ids: ["text_mktzxzhy"]) {
                   id
                   text
                   value
@@ -285,7 +288,7 @@ export class MondayContacts {
         // Search through items for matching SimPro ID
         for (const item of itemsPage.items) {
           const simproIdColumn = item.column_values?.find(
-            (col: any) => col.id === "text_mkty91sr" // Contact SimPro ID column
+            (col: any) => col.id === "text_mktzxzhy" // Contact SimPro ID column
           );
 
           if (simproIdColumn?.text === simproIdStr) {
