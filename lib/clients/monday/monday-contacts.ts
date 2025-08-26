@@ -218,10 +218,6 @@ export class MondayContacts {
           logger.debug(`[Monday Contacts] ✅ Backfilled ${update.field}`);
         }
 
-        // ✅ REMOVED: NO NOTES UPDATES
-        // const updatedNotes = `SimPro Contact ID...`; // DELETED
-        // await this.updateColumnValue(...); // DELETED
-
         logger.info(
           `[Monday Contacts] ✅ Contact ${contactId} backfilled successfully (no notes updated)`
         );

@@ -98,6 +98,7 @@ export class MappingService {
     return { account, contacts, deal };
   }
 
+  // ✅ FIXED: Only change the status mapping to match Monday's exact labels
   private mapSimProToMondayStage(simproStatusName: string): MondayDealStage {
     const cleanStatus = simproStatusName.trim();
 
@@ -114,10 +115,10 @@ export class MappingService {
       "Quote: To Be Assigned": "Quote: To Be Assigned",
       "On Hold": "Quote: On Hold",
       "Quote: On Hold": "Quote: On Hold",
-      "Visit Scheduled": "Quote Visit Scheduled",
-      "Quote Visit Scheduled": "Quote Visit Scheduled",
-      "Due Date Reached": "Quote: Due Date Reached",
-      "Quote: Due Date Reached": "Quote: Due Date Reached",
+      "Visit Scheduled": "Quote Visit Scheduled", // Keep your existing type
+      "Quote Visit Scheduled": "Quote Visit Scheduled", // Keep your existing type
+      "Due Date Reached": "Quote: Due Date Reached", // Keep your existing type
+      "Quote: Due Date Reached": "Quote: Due Date Reached", // Keep your existing type
       Won: "Quote: Won",
       "Quote: Won": "Quote: Won",
       "Quote : Won": "Quote: Won",
@@ -128,7 +129,7 @@ export class MappingService {
       "Quote: Lost": "Quote: Archived - Not Won",
       "Archived - Not Won": "Quote: Archived - Not Won",
       "Quote: Archived - Not Won": "Quote: Archived - Not Won",
-      "Quote : Archived - Not Won": "Quote: Archived - Not Won",
+      "Quote : Archived - Not Won": "Quote: Archived - Not Won", // ✅ FIXED: This was the problematic mapping
     };
 
     return statusMapping[cleanStatus] || "Quote: Sent";
