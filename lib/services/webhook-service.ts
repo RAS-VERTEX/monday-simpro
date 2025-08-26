@@ -495,12 +495,13 @@ export class WebhookService {
     newStatus: string
   ): Promise<void> {
     const statusMapping: { [key: string]: string } = {
-      "Quote: Archived - Not Won": "Quote : Archived - Not Won",
-      "Quote : Archived - Not Won": "Quote : Archived - Not Won",
-      "Quote: Won": "Quote: Won",
-      "Quote : Won": "Quote: Won",
-      "Quote: Sent": "Quote: Sent",
-      "Quote : Sent": "Quote: Sent",
+      // Map all variants TO Monday's correct format (no spaces around colon)
+      "Quote: Archived - Not Won": "Quote: Archived - Not Won", // ✅ CORRECT
+      "Quote : Archived - Not Won": "Quote: Archived - Not Won", // ✅ FIXED: Remove spaces around colon
+      "Quote: Won": "Quote: Won", // ✅ CORRECT
+      "Quote : Won": "Quote: Won", // ✅ CORRECT
+      "Quote: Sent": "Quote: Sent", // ✅ CORRECT
+      "Quote : Sent": "Quote: Sent", // ✅ CORRECT
     };
 
     const mondayStatus = statusMapping[newStatus] || newStatus;
