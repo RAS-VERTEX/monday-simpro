@@ -424,7 +424,7 @@ export class WebhookService {
     return { updateValue, updateStatus, hasChanges };
   }
 
-  // ✅ NEW: Update deal efficiently
+  // ✅ NEW: Update deal efficiently with separate API calls
   private async updateDealEfficiently(
     dealId: string,
     updates: {
@@ -432,23 +432,34 @@ export class WebhookService {
       status?: string;
     }
   ): Promise<void> {
-    const mutations: string[] = [];
-    const variables: any = {};
+    const boardId = process.env.MONDAY_DEALS_BOARD_ID!;
+    const updateTypes = [];
 
+    // Update value if needed
     if (updates.value !== undefined) {
-      mutations.push(`
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: "deal_value"
-          value: $valueUpdate
-        ) {
-          id
+      const valueMutation = `
+        mutation UpdateDealValue($itemId: ID!, $boardId: ID!, $value: JSON!) {
+          change_column_value(
+            item_id: $itemId
+            board_id: $boardId
+            column_id: "deal_value"
+            value: $value
+          ) {
+            id
+          }
         }
-      `);
-      variables.valueUpdate = JSON.stringify(updates.value);
+      `;
+
+      await this.syncService.mondayClient.query(valueMutation, {
+        itemId: dealId,
+        boardId,
+        value: JSON.stringify(updates.value),
+      });
+
+      updateTypes.push(`value: ${updates.value}`);
     }
 
+    // Update status if needed
     if (updates.status !== undefined) {
       const statusMapping: { [key: string]: string } = {
         "Quote: Archived - Not Won": "Quote: Archived - Not Won",
@@ -461,40 +472,27 @@ export class WebhookService {
 
       const mondayStatus = statusMapping[updates.status] || updates.status;
 
-      mutations.push(`
-        change_column_value(
-          item_id: $itemId
-          board_id: $boardId
-          column_id: "deal_stage"
-          value: $statusUpdate
-        ) {
-          id
+      const statusMutation = `
+        mutation UpdateDealStatus($itemId: ID!, $boardId: ID!, $value: JSON!) {
+          change_column_value(
+            item_id: $itemId
+            board_id: $boardId
+            column_id: "deal_stage"
+            value: $value
+          ) {
+            id
+          }
         }
-      `);
-      variables.statusUpdate = JSON.stringify({ label: mondayStatus });
-    }
+      `;
 
-    if (mutations.length === 0) return;
+      await this.syncService.mondayClient.query(statusMutation, {
+        itemId: dealId,
+        boardId,
+        value: JSON.stringify({ label: mondayStatus }),
+      });
 
-    const mutation = `
-      mutation UpdateDeal($itemId: ID!, $boardId: ID!${
-        updates.value !== undefined ? ", $valueUpdate: JSON!" : ""
-      }${updates.status !== undefined ? ", $statusUpdate: JSON!" : ""}) {
-        ${mutations.join("\n")}
-      }
-    `;
-
-    await this.syncService.mondayClient.query(mutation, {
-      itemId: dealId,
-      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
-      ...variables,
-    });
-
-    const updateTypes = [];
-    if (updates.value !== undefined)
-      updateTypes.push(`value: $${updates.value}`);
-    if (updates.status !== undefined)
       updateTypes.push(`status: "${updates.status}"`);
+    }
 
     logger.info(`Deal ${dealId} updated: ${updateTypes.join(", ")}`);
   }
