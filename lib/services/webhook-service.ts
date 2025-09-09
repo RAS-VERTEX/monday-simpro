@@ -77,7 +77,7 @@ export class WebhookService {
     }
   }
 
-  // ✅ UPDATED: handleQuoteUpdated with Closed/Archived Stage deletion logic
+  // ✅ UPDATED: handleQuoteUpdated with efficient price + status updates
   private async handleQuoteUpdated(
     quoteId: number,
     companyId: number
@@ -123,7 +123,7 @@ export class WebhookService {
         return await this.handleQuoteCreated(quoteId, companyId);
       }
 
-      // ✅ NEW STEP 5: Check if quote stage is Closed/Archived and should be deleted
+      // STEP 5: Check if quote stage is Closed/Archived and should be deleted
       const currentStage = priceCheckResult.basicQuote.Stage?.trim();
       const currentStatus = priceCheckResult.basicQuote.Status?.Name?.trim();
 
@@ -141,24 +141,73 @@ export class WebhookService {
         };
       }
 
-      // STEP 6: Update existing quote (status only) - existing logic
+      // STEP 6: Efficient update - only update if there are changes
       logger.info(
-        `Updating existing quote ${quoteId} ("${existingDeal.name}")`
+        `Checking if quote ${quoteId} ("${existingDeal.name}") needs updates`
       );
 
+      // Get current Monday deal data
+      const currentDealData = await this.getCurrentDealData(existingDeal.id);
+      if (!currentDealData) {
+        logger.error(
+          `Could not retrieve current deal data for ${existingDeal.id}`
+        );
+        return {
+          success: false,
+          message: `Could not retrieve current deal data for quote ${quoteId}`,
+        };
+      }
+
+      // Compare with SimPro data
+      const newValue = priceCheckResult.value;
       const newStatus = currentStatus;
-      if (newStatus && this.isStatusUpdateNeeded(newStatus)) {
-        await this.updateDealStatusOnly(existingDeal.id, newStatus);
-        logger.info(`Quote ${quoteId} status updated to "${newStatus}"`);
+
+      const updateCheck = this.needsUpdate(
+        currentDealData.currentValue,
+        currentDealData.currentStatus,
+        newValue,
+        newStatus
+      );
+
+      if (!updateCheck.hasChanges) {
+        logger.info(`Quote ${quoteId} has no changes - skipping update`);
         return {
           success: true,
-          message: `Quote ${quoteId} status updated to "${newStatus}"`,
+          message: `Quote ${quoteId} is already up to date`,
+        };
+      }
+
+      // Prepare updates
+      const updates: { value?: number; status?: string } = {};
+
+      if (updateCheck.updateValue) {
+        updates.value = newValue;
+      }
+
+      if (updateCheck.updateStatus && this.isStatusUpdateNeeded(newStatus)) {
+        updates.status = newStatus;
+      }
+
+      // Apply updates efficiently
+      if (Object.keys(updates).length > 0) {
+        await this.updateDealEfficiently(existingDeal.id, updates);
+
+        const updateTypes = [];
+        if (updates.value !== undefined) updateTypes.push("value");
+        if (updates.status !== undefined) updateTypes.push("status");
+
+        logger.info(`Quote ${quoteId} updated: ${updateTypes.join(" and ")}`);
+        return {
+          success: true,
+          message: `Quote ${quoteId} ${updateTypes.join(
+            " and "
+          )} updated successfully`,
         };
       } else {
-        logger.info(`Quote ${quoteId} status unchanged, no update needed`);
+        logger.info(`Quote ${quoteId} - no critical updates needed`);
         return {
           success: true,
-          message: `Quote ${quoteId} status unchanged, no update needed`,
+          message: `Quote ${quoteId} - no critical updates needed`,
         };
       }
     } catch (error: any) {
@@ -300,6 +349,154 @@ export class WebhookService {
         }`,
       };
     }
+  }
+
+  // ✅ NEW: Get current deal data from Monday
+  private async getCurrentDealData(dealId: string): Promise<{
+    currentValue: number;
+    currentStatus: string;
+  } | null> {
+    try {
+      const query = `
+        query GetDealData($itemId: ID!) {
+          items(ids: [$itemId]) {
+            id
+            column_values(ids: ["deal_value", "deal_stage"]) {
+              id
+              text
+              value
+            }
+          }
+        }
+      `;
+
+      const result = await this.syncService.mondayClient.query(query, {
+        itemId: dealId,
+      });
+
+      const item = result.items?.[0];
+      if (!item) return null;
+
+      let currentValue = 0;
+      let currentStatus = "";
+
+      for (const column of item.column_values) {
+        if (column.id === "deal_value") {
+          currentValue = parseFloat(column.text || "0");
+        } else if (column.id === "deal_stage") {
+          try {
+            const statusValue = JSON.parse(column.value || "{}");
+            currentStatus = statusValue.label || "";
+          } catch {
+            currentStatus = column.text || "";
+          }
+        }
+      }
+
+      return { currentValue, currentStatus };
+    } catch (error) {
+      logger.error(`Failed to get current deal data for ${dealId}`, { error });
+      return null;
+    }
+  }
+
+  // ✅ NEW: Check what needs updating
+  private needsUpdate(
+    currentValue: number,
+    currentStatus: string,
+    newValue: number,
+    newStatus: string
+  ): { updateValue: boolean; updateStatus: boolean; hasChanges: boolean } {
+    const updateValue = Math.abs(currentValue - newValue) > 0.01; // Account for floating point precision
+    const updateStatus = currentStatus !== newStatus;
+    const hasChanges = updateValue || updateStatus;
+
+    logger.debug(`Update check for deal:`, {
+      currentValue,
+      newValue,
+      updateValue,
+      currentStatus,
+      newStatus,
+      updateStatus,
+      hasChanges,
+    });
+
+    return { updateValue, updateStatus, hasChanges };
+  }
+
+  // ✅ NEW: Update deal efficiently
+  private async updateDealEfficiently(
+    dealId: string,
+    updates: {
+      value?: number;
+      status?: string;
+    }
+  ): Promise<void> {
+    const mutations: string[] = [];
+    const variables: any = {};
+
+    if (updates.value !== undefined) {
+      mutations.push(`
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: "deal_value"
+          value: $valueUpdate
+        ) {
+          id
+        }
+      `);
+      variables.valueUpdate = JSON.stringify(updates.value);
+    }
+
+    if (updates.status !== undefined) {
+      const statusMapping: { [key: string]: string } = {
+        "Quote: Archived - Not Won": "Quote: Archived - Not Won",
+        "Quote : Archived - Not Won": "Quote: Archived - Not Won",
+        "Quote: Won": "Quote: Won",
+        "Quote : Won": "Quote: Won",
+        "Quote: Sent": "Quote: Sent",
+        "Quote : Sent": "Quote: Sent",
+      };
+
+      const mondayStatus = statusMapping[updates.status] || updates.status;
+
+      mutations.push(`
+        change_column_value(
+          item_id: $itemId
+          board_id: $boardId
+          column_id: "deal_stage"
+          value: $statusUpdate
+        ) {
+          id
+        }
+      `);
+      variables.statusUpdate = JSON.stringify({ label: mondayStatus });
+    }
+
+    if (mutations.length === 0) return;
+
+    const mutation = `
+      mutation UpdateDeal($itemId: ID!, $boardId: ID!${
+        updates.value !== undefined ? ", $valueUpdate: JSON!" : ""
+      }${updates.status !== undefined ? ", $statusUpdate: JSON!" : ""}) {
+        ${mutations.join("\n")}
+      }
+    `;
+
+    await this.syncService.mondayClient.query(mutation, {
+      itemId: dealId,
+      boardId: process.env.MONDAY_DEALS_BOARD_ID!,
+      ...variables,
+    });
+
+    const updateTypes = [];
+    if (updates.value !== undefined)
+      updateTypes.push(`value: $${updates.value}`);
+    if (updates.status !== undefined)
+      updateTypes.push(`status: "${updates.status}"`);
+
+    logger.info(`Deal ${dealId} updated: ${updateTypes.join(", ")}`);
   }
 
   private async checkQuoteValueFirst(
